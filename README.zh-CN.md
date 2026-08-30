@@ -22,6 +22,8 @@ pi install git:github.com/LycanW/pi-taste@v0.1.0
 pi -e git:github.com/LycanW/pi-taste@v0.1.0
 ```
 
+当前版本已使用 Pi 0.84.4 验证，并要求 Node.js 22.19 或更高版本，与 Pi 自身的运行时要求一致。
+
 安装或更新后重新加载 Pi：
 
 ```text

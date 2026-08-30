@@ -22,6 +22,8 @@ Try it for one run without installing:
 pi -e git:github.com/LycanW/pi-taste@v0.1.0
 ```
 
+This release is tested with Pi 0.84.4 and requires Node.js 22.19 or newer, matching Pi's runtime requirement.
+
 After installation or an update, reload Pi:
 
 ```text

@@ -42,7 +42,7 @@
     "url": "https://github.com/LycanW/pi-taste/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "pi": {
     "extensions": [
