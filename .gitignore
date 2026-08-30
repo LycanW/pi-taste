@@ -1,0 +1,20 @@
+node_modules/
+coverage/
+dist/
+*.log
+.DS_Store
+
+# Local credentials and environment
+.env
+.env.*
+*.pem
+*.key
+
+# Private runtime state (never publish learned preferences or audit logs)
+.pi/
+.commandcode/
+taste/
+preferences.json
+events.jsonl
+config.json
+curation-plan.json
