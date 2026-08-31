@@ -2,6 +2,15 @@
 
 All notable changes to Pi Taste are documented here.
 
+## 0.3.2 - 2026-08-31
+
+- Add `/taste retry [event-id]` for explicit, project-local replay of failed Observer events.
+- Reuse saved redacted feedback and Agent outcome while applying the current model and Global setting.
+- Keep the original failed event ID as the Reducer evidence ID for idempotent retries.
+- Queue retries behind foreground Agent work and record every attempt with `retryOf` audit metadata.
+- Exclude successfully retried events from later default retry selection.
+- Remove the independent injection switch; `/taste on|off` now controls both automatic learning and all Taste injection.
+
 ## 0.3.1 - 2026-08-31
 
 - Start automatic Observer work only after the complete foreground Agent run has settled.

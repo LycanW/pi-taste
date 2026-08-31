@@ -47,7 +47,6 @@ export interface ProjectTasteConfig {
 export interface TasteConfig {
 	version: 1;
 	learningEnabled: boolean;
-	injectionEnabled: boolean;
 	observer: {
 		modelMode: "inherit" | "custom";
 		models: ObserverModelRef[];

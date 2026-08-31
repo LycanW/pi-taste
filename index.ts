@@ -37,6 +37,7 @@ import {
 	clipText,
 	ensureGlobalStore,
 	findProjectRoot,
+	findRetryableObserverEvent,
 	globalStorePaths,
 	loadCommandCodeTaste,
 	loadConfig,
@@ -71,6 +72,8 @@ interface PendingFeedbackJob {
 	ctx: ExtensionContext;
 	feedback: string;
 	previous: AgentOutcome | undefined;
+	retryOf?: string;
+	evidenceEventId?: string;
 }
 
 function eventId(): string {
@@ -289,7 +292,7 @@ async function injectedSystemPrompt(
 	config: TasteConfig,
 ): Promise<{ systemPrompt: string; snapshot: InjectionSnapshot; includeGlobalTaste: boolean }> {
 	const stores = await preferenceStores(cwd);
-	if (!config.injectionEnabled) {
+	if (!config.learningEnabled) {
 		return {
 			systemPrompt: eventSystemPrompt,
 			snapshot: { digest: "off", bytes: 0, count: 0 },
@@ -350,6 +353,13 @@ function safeAppendTasteActivity(pi: ExtensionAPI, data: TasteActivityData): voi
 	}
 }
 
+function globalTasteStatus(includeGlobalTaste: boolean, tasteEnabled: boolean): string {
+	if (!tasteEnabled) return `${includeGlobalTaste ? "on" : "off"} (inactive while Taste is off)`;
+	return includeGlobalTaste
+		? "on (injection + automatic learning)"
+		: "off (project-only injection + learning)";
+}
+
 function statusCounts(preferences: Preference[]): string {
 	const count = (status: Preference["status"]) => preferences.filter((item) => item.status === status).length;
 	return `${count("approved")} approved, ${count("pending")} pending, ${count("rejected")} rejected, ${count("superseded")} superseded`;
@@ -404,9 +414,9 @@ function commandHelp(): string {
 		"/taste move <id> [global|project]",
 		"/taste review [<id> approve|reject]",
 		"/taste forget <id>",
+		"/taste retry [event-id]",
 		"/taste on | off",
 		"/taste global [status|on|off]",
-		"/taste inject on | off",
 		"/taste model [status|inherit|select|set|only|add|remove|list] [provider/model|search]",
 		"/taste curate [show|apply [--yes]|discard|rebuild|--model provider/model]",
 	].join("\n");
@@ -427,6 +437,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 	let currentThinkingLevel: string | undefined;
 	let includeGlobalTaste = false;
 	let pendingFeedback: PendingFeedbackJob[] = [];
+	const retryingEventIds = new Set<string>();
 	let currentRunMessages: any[] = [];
 	let liveAssistantMessage: any | undefined;
 	const refreshFooter = () => requestFooterRender();
@@ -436,13 +447,10 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 		process.env.PI_TASTE_ALLOW_NO_SESSION === "1" || process.env.PI_TASTE_ALLOW_NO_SESSION === "true";
 	const learningAllowedInProcess = !isSubagentChild && (!noSession || allowNoSession);
 
-	const processFeedback = async (
-		ctx: ExtensionContext,
-		feedbackInput: string,
-		previous: AgentOutcome | undefined,
-	): Promise<void> => {
+	const processFeedback = async (job: PendingFeedbackJob): Promise<void> => {
+		const { ctx, feedback: feedbackInput, previous, retryOf, evidenceEventId } = job;
 		config = await loadConfig();
-		if (!config.learningEnabled || !learningAllowedInProcess) return;
+		if ((!config.learningEnabled && !retryOf) || !learningAllowedInProcess) return;
 		const stores = await preferenceStores(ctx.cwd);
 		const id = eventId();
 		const at = new Date().toISOString();
@@ -452,6 +460,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 			id,
 			timestamp: at,
 			type: "observer",
+			...(retryOf ? { details: { retryOf } } : {}),
 			...(sessionId(ctx) ? { sessionId: sessionId(ctx) } : {}),
 			...(stores.projectRoot ? { projectRoot: stores.projectRoot } : {}),
 			interaction: {
@@ -481,7 +490,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 			const reduction = await reduceObserverResult(
 				result,
 				{
-					eventId: id,
+					eventId: evidenceEventId ?? id,
 					at,
 					userFeedback: feedback,
 					sessionId: sessionId(ctx),
@@ -507,18 +516,24 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 				timestamp: at,
 				kind: "observer",
 				outcome: lowSignal ? "skipped" : storedChanges.length > 0 ? "changed" : "unchanged",
-				title: lowSignal ? "Skipped low-signal feedback" : observerActivityTitle(reduction.changes),
+				title: retryOf
+					? `Observer retry: ${lowSignal ? "skipped low-signal feedback" : observerActivityTitle(reduction.changes)}`
+					: lowSignal
+						? "Skipped low-signal feedback"
+						: observerActivityTitle(reduction.changes),
 				changes,
 				files: tasteActivityFiles(stores.globalPaths, stores.projectPaths, changes, projectChanged),
 				classification: result.classification.kind,
 				...(event.observer?.usage
 					? { model: `${event.observer.usage.provider}/${event.observer.usage.model}` }
 					: {}),
-				detail: storedChanges.length === 0
-					? lowSignal
-						? "No Observer call was needed; no Taste file changed."
-						: `${result.classification.reason} No Taste file changed.`
-					: result.classification.reason,
+				detail: `${retryOf ? `Retry of failed event ${retryOf}. ` : ""}${
+					storedChanges.length === 0
+						? lowSignal
+							? "No Observer call was needed; no Taste file changed."
+							: `${result.classification.reason} No Taste file changed.`
+						: result.classification.reason
+				}`,
 			});
 		} catch (error) {
 			lastObserverError = error instanceof Error ? error.message : String(error);
@@ -535,10 +550,13 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 				timestamp: at,
 				kind: "error",
 				outcome: "failed",
-				title: "Observer failed",
+				title: retryOf ? "Observer retry failed" : "Observer failed",
 				changes: [],
 				files: tasteActivityFiles(stores.globalPaths, stores.projectPaths, []),
-				detail: clipText(redactSensitive(lastObserverError), 600),
+				detail: clipText(
+					`${retryOf ? `Retry of failed event ${retryOf}. ` : ""}${redactSensitive(lastObserverError)}`,
+					600,
+				),
 			});
 		}
 	};
@@ -547,12 +565,13 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 		queuedJobs += 1;
 		refreshFooter();
 		queue = queue
-			.then(() => processFeedback(job.ctx, job.feedback, job.previous))
+			.then(() => processFeedback(job))
 			.catch((error) => {
 				lastObserverError = error instanceof Error ? error.message : String(error);
 			})
 			.finally(() => {
 				queuedJobs -= 1;
+				if (job.retryOf) retryingEventIds.delete(job.retryOf);
 				refreshFooter();
 			});
 	};
@@ -577,7 +596,6 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 			ctx,
 			() => ({
 				learningEnabled: config.learningEnabled,
-				injectionEnabled: config.injectionEnabled,
 				includeGlobalTaste,
 				queuedJobs: queuedJobs + pendingFeedback.length,
 				hasError: Boolean(lastObserverError),
@@ -686,7 +704,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 						? await loadCommandCodeTaste(stores.projectRoot)
 						: [];
 					includeGlobalTaste = stores.projectConfig.includeGlobalTaste;
-					if (config.injectionEnabled) {
+					if (config.learningEnabled) {
 						const built = buildTasteSection(
 							stores.project,
 							stores.global,
@@ -700,9 +718,8 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					const savedPlan = await loadCurationPlan();
 					ctx.ui.notify(
 						[
-							`Taste learning: ${config.learningEnabled ? "on" : "off"}${learningAllowedInProcess ? "" : " (disabled for --no-session/subagent)"}`,
-							`Taste injection: ${config.injectionEnabled ? "on" : "off"}`,
-							`Global Taste in this project: ${stores.projectConfig.includeGlobalTaste ? "on (injection + automatic learning)" : "off (project-only injection + learning)"}`,
+							`Taste: ${config.learningEnabled ? "on (automatic learning + injection)" : "off (automatic learning + injection disabled)"}${learningAllowedInProcess ? "" : " (learning unavailable for --no-session/subagent)"}`,
+							`Global Taste in this project: ${globalTasteStatus(stores.projectConfig.includeGlobalTaste, config.learningEnabled)}`,
 							`Taste model mode: ${config.observer.modelMode}`,
 							`Observer: ${activeModel ? `${activeModel.provider}/${activeModel.id}` : "unavailable"}`,
 							`Injection snapshot: ${lastInjectionSnapshot.digest} (${lastInjectionSnapshot.count} entries, ${lastInjectionSnapshot.bytes} bytes)`,
@@ -714,6 +731,43 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 							...(lastObserverError ? [`Last Observer error: ${lastObserverError}`] : []),
 						].join("\n"),
 						lastObserverError ? "warning" : "info",
+					);
+					return;
+				}
+
+				if (subcommand === "retry") {
+					if (!learningAllowedInProcess) {
+						throw new Error("Observer retry is unavailable in --no-session or subagent child processes.");
+					}
+					if (restParts.length > 1) throw new Error("Usage: /taste retry [event-id]");
+					const stores = await preferenceStores(ctx.cwd);
+					if (!stores.projectRoot) throw new Error("Project Taste is unavailable for the current working directory.");
+					const found = await findRetryableObserverEvent(
+						stores.globalPaths,
+						stores.projectRoot,
+						restParts[0],
+					);
+					if (!found.event?.interaction) throw new Error(found.reason ?? "No retryable Observer event was found.");
+					if (retryingEventIds.has(found.event.id)) {
+						throw new Error(`Observer event ${found.event.id} is already queued for retry.`);
+					}
+					const job: PendingFeedbackJob = {
+						ctx,
+						feedback: found.event.interaction.currentUserFeedback,
+						previous: found.event.interaction.previousAgentOutcome,
+						retryOf: found.event.id,
+						evidenceEventId: found.event.id,
+					};
+					retryingEventIds.add(found.event.id);
+					const startNow = ctx.isIdle();
+					if (startNow) enqueueFeedback(job);
+					else {
+						pendingFeedback.push(job);
+						refreshFooter();
+					}
+					ctx.ui.notify(
+						`Taste Observer retry queued for ${found.event.id}${startNow ? "." : "; it will start after the foreground Agent settles."}`,
+						"info",
 					);
 					return;
 				}
@@ -1169,15 +1223,37 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 
 				if (subcommand === "on" || subcommand === "off") {
 					config = await loadConfig();
-					config.learningEnabled = subcommand === "on";
+					const enabled = subcommand === "on";
+					config.learningEnabled = enabled;
 					await saveConfig(config);
 					lastObserverError = undefined;
+					if (enabled) {
+						const stores = await preferenceStores(ctx.cwd);
+						includeGlobalTaste = stores.projectConfig.includeGlobalTaste;
+						const imported = config.injection.includeCommandCode
+							? await loadCommandCodeTaste(stores.projectRoot)
+							: [];
+						const built = buildTasteSection(
+							stores.project,
+							stores.global,
+							imported,
+							config,
+							stores.projectConfig.includeGlobalTaste,
+						);
+						lastInjectionSnapshot = snapshotForSection(built.section, built.count);
+					} else lastInjectionSnapshot = { digest: "off", bytes: 0, count: 0 };
 					refreshFooter();
-					ctx.ui.notify(`Taste learning ${subcommand}. Existing approved Taste remains injectable.`, "info");
+					ctx.ui.notify(
+						enabled
+							? "Taste on. Automatic learning and approved Taste injection are enabled."
+							: "Taste off. Automatic learning and all Taste injection are disabled; stored state is preserved.",
+						"info",
+					);
 					return;
 				}
 
 				if (subcommand === "global") {
+					config = await loadConfig();
 					const action = rest || "status";
 					if (!["status", "on", "off"].includes(action)) {
 						throw new Error("Usage: /taste global [status|on|off]");
@@ -1186,7 +1262,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					if (!stores.projectPaths) throw new Error("Project Taste is unavailable for the current working directory.");
 					if (action === "status") {
 						ctx.ui.notify(
-							`Global Taste in this project: ${stores.projectConfig.includeGlobalTaste ? "on (injection + automatic learning)" : "off (project-only injection + learning)"}\nProject config: ${projectConfigPath(stores.projectPaths)}`,
+							`Global Taste in this project: ${globalTasteStatus(stores.projectConfig.includeGlobalTaste, config.learningEnabled)}\nProject config: ${projectConfigPath(stores.projectPaths)}`,
 							"info",
 						);
 						return;
@@ -1204,7 +1280,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					});
 					includeGlobalTaste = enabled;
 					config = await loadConfig();
-					if (config.injectionEnabled) {
+					if (config.learningEnabled) {
 						const imported = config.injection.includeCommandCode
 							? await loadCommandCodeTaste(stores.projectRoot)
 							: [];
@@ -1232,27 +1308,25 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 						title: `Global Taste ${enabled ? "enabled" : "disabled"} for this project`,
 						changes: [],
 						files: tasteActivityFiles(stores.globalPaths, stores.projectPaths, [], true),
-						detail: `${enabled ? "Global injection and automatic Global learning enabled." : "Automatic learning constrained to Project scope; Global injection disabled."}\nProject config: ${projectConfigPath(stores.projectPaths)}`,
+						detail: `${
+							config.learningEnabled
+								? enabled
+									? "Global injection and automatic Global learning enabled."
+									: "Automatic learning constrained to Project scope; Global injection disabled."
+								: `Global setting changed to ${enabled ? "on" : "off"}; it remains inactive while Taste is off.`
+						}\nProject config: ${projectConfigPath(stores.projectPaths)}`,
 					});
 					ctx.ui.notify(
-						enabled
-							? "Global Taste injection and automatic Global learning are enabled for this project. Project scope remains the default and has injection priority."
-							: "Global Taste is disabled for this project. Only Project Taste will be injected or learned automatically.",
+						config.learningEnabled
+							? enabled
+								? "Global Taste injection and automatic Global learning are enabled for this project. Project scope remains the default and has injection priority."
+								: "Global Taste is disabled for this project. Only Project Taste will be injected or learned automatically."
+							: `Global Taste setting is ${enabled ? "on" : "off"} for this project, but remains inactive while Taste is off.`,
 						"info",
 					);
 					return;
 				}
 
-				if (subcommand === "inject") {
-					if (rest !== "on" && rest !== "off") throw new Error("Usage: /taste inject on|off");
-					config = await loadConfig();
-					config.injectionEnabled = rest === "on";
-					await saveConfig(config);
-					lastInjectionSnapshot = rest === "on" ? lastInjectionSnapshot : { digest: "off", bytes: 0, count: 0 };
-					refreshFooter();
-					ctx.ui.notify(`Taste injection ${rest}.`, "info");
-					return;
-				}
 
 				if (subcommand === "curate") {
 					const action = ["show", "apply", "discard", "rebuild"].includes(restParts[0] ?? "")

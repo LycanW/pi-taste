@@ -1,4 +1,4 @@
-import { constants as fsConstants, existsSync } from "node:fs";
+import { constants as fsConstants, createReadStream, existsSync } from "node:fs";
 import {
 	access,
 	appendFile,
@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type {
 	ImportedTaste,
@@ -38,7 +39,6 @@ export function defaultConfig(): TasteConfig {
 	return {
 		version: STORE_VERSION,
 		learningEnabled: true,
-		injectionEnabled: true,
 		observer: {
 			modelMode: "inherit",
 			models: [],
@@ -182,7 +182,6 @@ function mergeConfig(value: unknown): TasteConfig {
 	return {
 		version: STORE_VERSION,
 		learningEnabled: typeof input.learningEnabled === "boolean" ? input.learningEnabled : defaults.learningEnabled,
-		injectionEnabled: typeof input.injectionEnabled === "boolean" ? input.injectionEnabled : defaults.injectionEnabled,
 		observer: {
 			modelMode: observer.modelMode === "custom" ? "custom" : "inherit",
 			models,
@@ -366,6 +365,61 @@ export async function regenerateTaste(paths: StorePaths): Promise<void> {
 export async function appendEvent(paths: StorePaths, event: TasteEvent): Promise<void> {
 	await mkdir(paths.dir, { recursive: true, mode: 0o700 });
 	await appendFile(paths.events, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600, flag: "a" });
+}
+
+export async function findRetryableObserverEvent(
+	paths: StorePaths,
+	projectRoot: string,
+	eventId?: string,
+): Promise<{ event?: TasteEvent; reason?: string }> {
+	await mkdir(paths.dir, { recursive: true, mode: 0o700 });
+	if (!(await exists(paths.events))) {
+		return { reason: "No retryable failed Observer event was found in the current project" };
+	}
+	const failedRoots = new Map<string, TasteEvent>();
+	const retryRoots = new Map<string, string>();
+	const completedRetries = new Set<string>();
+	const lines = createInterface({
+		input: createReadStream(paths.events, { encoding: "utf8" }),
+		crlfDelay: Infinity,
+	});
+	for await (const line of lines) {
+		if (!line.trim()) continue;
+		let event: TasteEvent;
+		try {
+			event = JSON.parse(line) as TasteEvent;
+		} catch {
+			continue;
+		}
+		if (event.type !== "observer" || event.projectRoot !== projectRoot) continue;
+		const retryOf = typeof event.details?.retryOf === "string" ? event.details.retryOf : undefined;
+		if (retryOf) {
+			retryRoots.set(event.id, retryOf);
+			if (event.observer?.status === "completed" || event.observer?.status === "skipped") {
+				completedRetries.add(retryOf);
+			}
+			continue;
+		}
+		if (
+			event.observer?.status === "failed" &&
+			typeof event.interaction?.currentUserFeedback === "string" &&
+			event.interaction.currentUserFeedback.trim()
+		) {
+			failedRoots.set(event.id, event);
+		}
+	}
+
+	if (eventId) {
+		const rootId = retryRoots.get(eventId) ?? eventId;
+		const event = failedRoots.get(rootId);
+		if (!event) return { reason: `Failed Observer event ${eventId} was not found in the current project` };
+		if (completedRetries.has(rootId)) return { reason: `Observer event ${rootId} was already retried successfully` };
+		return { event };
+	}
+
+	const candidates = [...failedRoots.values()].filter((event) => !completedRetries.has(event.id));
+	const event = candidates.at(-1);
+	return event ? { event } : { reason: "No retryable failed Observer event was found in the current project" };
 }
 
 export function normalizePreferenceKey(value: string): string {

@@ -13,13 +13,13 @@ Pi Taste is an independent open-source implementation inspired by the user-facin
 Install the Pi package directly from GitHub:
 
 ```bash
-pi install git:github.com/LycanW/pi-taste@v0.3.1
+pi install git:github.com/LycanW/pi-taste@v0.3.2
 ```
 
 Try it for one run without installing:
 
 ```bash
-pi -e git:github.com/LycanW/pi-taste@v0.3.1
+pi -e git:github.com/LycanW/pi-taste@v0.3.2
 ```
 
 This release is tested with Pi 0.84.4 and requires Node.js 22.19 or newer, matching Pi's runtime requirement.
@@ -38,8 +38,7 @@ Check the current state:
 
 Default behavior:
 
-- automatic learning is on;
-- approved Project Taste injection is on;
+- Taste is on: automatic learning and approved Taste injection are both enabled;
 - Global Taste injection and automatic Global learning are on for newly initialized projects unless explicitly disabled;
 - the Observer follows the current main Pi model;
 - automatic learning starts after the foreground Agent fully settles and may continue in the background alongside later turns;
@@ -144,10 +143,9 @@ In TUI mode, Taste status appears immediately after context-window usage:
 
 Possible indicators:
 
-- `Taste:on`: automatic learning is enabled;
-- `Taste:off`: automatic learning is disabled;
-- `/inject-off`: approved Taste injection is disabled;
-- `/project-only`: Global Taste is disabled for this project;
+- `Taste:on`: automatic learning and approved Taste injection are enabled;
+- `Taste:off`: automatic learning and all Taste injection are disabled;
+- `/project-only`: Global Taste is disabled for this project while Taste is on;
 - `·N`: N Observer jobs are queued or running;
 - `!`: the most recent Observer operation failed.
 
@@ -257,7 +255,16 @@ Forget a preference:
 
 Forgetting is audit-preserving: it changes the status to `rejected` rather than deleting evidence.
 
-## 8. Learning and injection controls
+Retry a failed Observer event without retyping its feedback:
+
+```text
+/taste retry                  # latest retryable failure in this project
+/taste retry <event-id>       # a specific failed event
+```
+
+Retry is explicit and never loops automatically. It reuses the saved redacted feedback and Agent outcome, uses the current Taste model and project Global setting, and writes a new audit event with `retryOf`. The Reducer keeps the original event ID as the evidence ID, making repeated or partially completed attempts idempotent. If the foreground Agent is running, retry waits for `agent_settled`; otherwise it enters the serialized Observer queue immediately. A successfully retried event is no longer selected by `/taste retry`.
+
+## 8. Taste and Global controls
 
 ```text
 /taste on
@@ -265,22 +272,20 @@ Forgetting is audit-preserving: it changes the status to `rejected` rather than 
 /taste global status
 /taste global on
 /taste global off
-/taste inject on
-/taste inject off
 ```
 
-The controls have separate roles:
+Taste has one master switch:
 
-- `/taste off` stops all new automatic learning but does not remove or disable existing approved Taste;
-- `/taste global on` is the default for newly initialized projects: it enables Global Pi Taste and Global Command Code Taste injection below Project Taste priority, and permits automatic Global learning only from explicit cross-project evidence;
-- `/taste global off` limits both injection and automatic learning to Project scope; automatic learning cannot create or reinforce Global preferences from that project;
+- `/taste on` enables both automatic learning and approved Taste injection;
+- `/taste off` disables both automatic learning and all Taste injection, without deleting stored preferences or audit history;
+- manual management commands such as `remember`, `review`, `move`, `curate`, and explicit `retry` remain available while Taste is off;
+- `/taste global on` is the default for newly initialized projects: while Taste is on, it enables Global Pi Taste and Global Command Code Taste injection below Project Taste priority and permits automatic Global learning only from explicit cross-project evidence;
+- `/taste global off` limits both injection and automatic learning to Project scope while Taste is on;
 - ambiguous automatic scope always defaults to Project, even when Global is on;
-- the project-specific choice is stored in `<project-root>/.pi/taste/config.json` and does not affect other projects;
-- existing project config is preserved across upgrades; the new default applies only when a project config is first initialized;
-- `/taste inject off` stops all prompt injection but can leave automatic learning enabled within the scopes permitted by the project Global setting;
-- turning injection back on restores the approved snapshot allowed by the project setting.
+- the project-specific Global choice is stored in `<project-root>/.pi/taste/config.json`, remains configurable while Taste is off, and does not affect other projects;
+- existing project config is preserved across upgrades; the new default applies only when a project config is first initialized.
 
-The Global switch never deletes existing Global preferences. They remain stored and can still be listed, reviewed, or managed while disabled. Explicit `-g` and `move ... global` commands are manual scope overrides rather than automatic learning.
+There is no independent injection switch. The Global switch never deletes existing Global preferences. They remain stored and can still be listed, reviewed, or managed while disabled. Explicit `-g` and `move ... global` commands are manual scope overrides rather than automatic learning.
 
 ## 9. Cache-stable injection
 
@@ -293,7 +298,7 @@ Approved Taste is appended to the system prompt as one deterministic snapshot. T
 - Command Code confidence suffixes are stripped;
 - category paths are sorted deterministically;
 - pending preferences and unapplied Curator plans do not affect the prompt;
-- the snapshot changes only when effective approved statements, scope, limits, or injection settings change;
+- the snapshot changes only when effective approved statements, scope, limits, or the Taste/Global setting changes;
 - changing `/taste global on|off` produces a new stable project snapshot without adding dynamic metadata.
 
 `/taste status` reports the current snapshot digest, entry count, and byte count.
@@ -347,9 +352,9 @@ Command Code Taste imports remain read-only and are never curated.
 /taste move <id> [global|project]
 /taste review [<id> approve|reject]
 /taste forget <id>
+/taste retry [event-id]
 /taste on | off
 /taste global [status|on|off]
-/taste inject on | off
 /taste model [status|inherit|select|set|only|add|remove|list] [provider/model|search]
 /taste curate [show|apply [--yes]|discard|rebuild|--model provider/model]
 /taste help
@@ -409,7 +414,6 @@ Default `~/.pi/agent/taste/config.json`:
 {
   "version": 1,
   "learningEnabled": true,
-  "injectionEnabled": true,
   "observer": {
     "modelMode": "inherit",
     "models": [],
@@ -425,6 +429,8 @@ Default `~/.pi/agent/taste/config.json`:
   }
 }
 ```
+
+`learningEnabled` is retained as the persisted master-switch field for config compatibility; it governs both automatic learning and injection. Legacy `injectionEnabled` values are ignored and removed the next time config is saved.
 
 Default `<project-root>/.pi/taste/config.json`:
 
@@ -514,6 +520,14 @@ Use:
 ```
 
 If custom mode is selected, confirm that the configured provider/model exists and has usable authentication. Taste does not silently switch to an unconfigured model.
+
+For a transient overload or network failure, retry the latest failed event in the current project after service recovers:
+
+```text
+/taste retry
+```
+
+Use `/taste retry <event-id>` for a specific failed activity-card Event ID. Retry is manual and audited; it does not create an automatic retry loop.
 
 The footer `!` marks the most recent unresolved Observer failure. It clears after a successful check, after changing the Taste model, after toggling learning, or after `/reload`. Historical failed events remain in `events.jsonl` for audit but do not restore the warning on startup.
 

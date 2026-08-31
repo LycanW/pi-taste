@@ -13,13 +13,13 @@ Pi Taste 是受 Command Code 用户侧 Taste 工作流启发的独立开源实�
 直接从 GitHub 安装 Pi package：
 
 ```bash
-pi install git:github.com/LycanW/pi-taste@v0.3.1
+pi install git:github.com/LycanW/pi-taste@v0.3.2
 ```
 
 无需永久安装即可试用一次：
 
 ```bash
-pi -e git:github.com/LycanW/pi-taste@v0.3.1
+pi -e git:github.com/LycanW/pi-taste@v0.3.2
 ```
 
 当前版本已使用 Pi 0.84.4 验证，并要求 Node.js 22.19 或更高版本，与 Pi 自身的运行时要求一致。
@@ -38,8 +38,7 @@ pi -e git:github.com/LycanW/pi-taste@v0.3.1
 
 默认行为：
 
-- 自动学习已开启；
-- approved Project Taste 注入已开启；
+- Taste 已开启：自动学习和 approved Taste 注入同时启用；
 - 新初始化的项目默认开启 Global Taste 注入和自动 Global 学习，除非显式关闭；
 - Observer 跟随当前 Pi 主模型；
 - 自动学习会在前台 Agent 完全结束后启动，并可与后续轮次并行在后台继续；
@@ -144,10 +143,9 @@ Pi Taste 宁可漏掉证据不足的推断，也不会轻易保存错误偏好�
 
 可能出现的标记：
 
-- `Taste:on`：自动学习已开启；
-- `Taste:off`：自动学习已关闭；
-- `/inject-off`：approved Taste 注入已关闭；
-- `/project-only`：当前项目未启用 Global Taste；
+- `Taste:on`：自动学习和 approved Taste 注入同时开启；
+- `Taste:off`：自动学习和全部 Taste 注入同时关闭；
+- `/project-only`：Taste 开启时，当前项目未启用 Global Taste；
 - `·N`：有 N 个 Observer 任务正在排队或运行；
 - `!`：最近一次 Observer 操作失败。
 
@@ -257,7 +255,16 @@ TUI 会显示有限预览并要求确认。脚本和 RPC 使用 `--yes`。确认
 
 遗忘操作会保留审计历史：它把状态改为 `rejected`，而不是直接删除证据。
 
-## 8. 学习与注入开关
+无需重新输入反馈即可重试失败的 Observer 事件：
+
+```text
+/taste retry                  # 当前项目最近一次可重试失败
+/taste retry <event-id>       # 指定失败事件
+```
+
+重试必须由用户显式触发，绝不会自动循环。它复用已保存并脱敏的反馈和 Agent outcome，使用当前 Taste 模型及项目 Global 设置，并写入带 `retryOf` 的新审计事件。Reducer 继续使用原事件 ID 作为证据 ID，因此重复尝试或部分完成的尝试具有幂等性。前台 Agent 忙碌时，重试会等待 `agent_settled`；空闲时则立即进入串行 Observer 队列。成功重试的事件不会再次被 `/taste retry` 默认选中。
+
+## 8. Taste 与 Global 开关
 
 ```text
 /taste on
@@ -265,22 +272,20 @@ TUI 会显示有限预览并要求确认。脚本和 RPC 使用 `--yes`。确认
 /taste global status
 /taste global on
 /taste global off
-/taste inject on
-/taste inject off
 ```
 
-这些控制项职责不同：
+Taste 只有一个总开关：
 
-- `/taste off` 停止全部新的自动学习，但不会删除或禁用已有 approved Taste；
-- `/taste global on` 是新初始化项目的默认值：在 Project Taste 之后启用 Global Pi Taste 和 Global Command Code Taste 注入，并且只允许有明确跨项目证据的自动学习归入 Global；
-- `/taste global off` 把注入和自动学习都限制在 Project 作用域；当前项目的自动学习不能创建或强化 Global 偏好；
+- `/taste on` 同时开启自动学习和 approved Taste 注入；
+- `/taste off` 同时关闭自动学习和全部 Taste 注入，但不会删除已保存偏好或审计历史；
+- Taste 关闭时，`remember`、`review`、`move`、`curate` 和显式 `retry` 等人工管理命令仍然可用；
+- `/taste global on` 是新初始化项目的默认值：Taste 开启时，在 Project Taste 之后启用 Global Pi Taste 和 Global Command Code Taste 注入，并且只允许有明确跨项目证据的自动学习归入 Global；
+- `/taste global off` 在 Taste 开启时把注入和自动学习都限制在 Project 作用域；
 - 即使 Global 已开启，作用域含糊的自动学习仍默认归入 Project；
-- 项目专属设置保存在 `<project-root>/.pi/taste/config.json`，不会影响其他项目；
-- 升级时保留已有项目配置；新的默认值只在项目配置首次初始化时生效；
-- `/taste inject off` 停止全部提示词注入，但可以在当前项目 Global 设置允许的作用域内继续自动学习；
-- 重新开启注入后，会恢复项目设置允许的 approved 快照。
+- 项目专属 Global 设置保存在 `<project-root>/.pi/taste/config.json`，Taste 关闭时仍可配置，并且不会影响其他项目；
+- 升级时保留已有项目配置；新的默认值只在项目配置首次初始化时生效。
 
-Global 开关不会删除已有 Global 偏好；关闭时仍可查看、审核和管理。显式 `-g` 与 `move ... global` 命令属于人工 Scope 覆盖，不是自动学习。
+不再存在独立注入开关。Global 开关不会删除已有 Global 偏好；关闭时仍可查看、审核和管理。显式 `-g` 与 `move ... global` 命令属于人工 Scope 覆盖，不是自动学习。
 
 ## 9. 缓存稳定注入
 
@@ -293,7 +298,7 @@ Approved Taste 会以一个确定性快照附加到 system prompt。为保护 Pr
 - 自动移除 Command Code Confidence 后缀；
 - category 路径使用确定性排序；
 - pending 偏好和未应用的 Curator 计划不会影响提示词；
-- 只有有效 approved statement、scope、限制或注入设置发生变化时，快照才会改变；
+- 只有有效 approved statement、scope、限制或 Taste/Global 设置发生变化时，快照才会改变；
 - `/taste global on|off` 会生成新的稳定项目快照，不会加入动态元数据。
 
 `/taste status` 会显示当前快照摘要、条目数量和字节数。
@@ -347,9 +352,9 @@ Command Code Taste 导入保持只读，Curator 永远不会修改它们。
 /taste move <id> [global|project]
 /taste review [<id> approve|reject]
 /taste forget <id>
+/taste retry [event-id]
 /taste on | off
 /taste global [status|on|off]
-/taste inject on | off
 /taste model [status|inherit|select|set|only|add|remove|list] [provider/model|search]
 /taste curate [show|apply [--yes]|discard|rebuild|--model provider/model]
 /taste help
@@ -409,7 +414,6 @@ Pi Taste 会规范化这些条目，并与 Pi 偏好去重。它永远不会修�
 {
   "version": 1,
   "learningEnabled": true,
-  "injectionEnabled": true,
   "observer": {
     "modelMode": "inherit",
     "models": [],
@@ -425,6 +429,8 @@ Pi Taste 会规范化这些条目，并与 Pi 偏好去重。它永远不会修�
   }
 }
 ```
+
+为兼容旧配置，持久化总开关字段继续命名为 `learningEnabled`；它现在同时控制自动学习和注入。旧的 `injectionEnabled` 值会被忽略，并在下次保存配置时移除。
 
 默认 `<project-root>/.pi/taste/config.json`：
 
@@ -514,6 +520,14 @@ gpg --decrypt ~/pi-taste-backup.tar.gz.gpg \
 ```
 
 如果处于 custom 模式，请确认配置的 provider/model 存在且拥有可用凭据。Taste 不会偷偷切换到未配置模型。
+
+对于短暂 overload 或网络失败，可在服务恢复后重试当前项目最近的失败事件：
+
+```text
+/taste retry
+```
+
+使用 `/taste retry <event-id>` 可以指定活动卡片中的失败 Event ID。重试是手工且可审计的，不会建立自动重试循环。
 
 Footer 中的 `!` 表示最近一次仍未恢复的 Observer 失败。成功完成一次检查、更改 Taste 模型、切换 learning 开关或执行 `/reload` 后，`!` 会清除。历史失败事件仍保留在 `events.jsonl` 中用于审计，但启动时不会重新恢复警告。
 
