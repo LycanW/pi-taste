@@ -13,13 +13,13 @@ Pi Taste 是受 Command Code 用户侧 Taste 工作流启发的独立开源实�
 直接从 GitHub 安装 Pi package：
 
 ```bash
-pi install git:github.com/LycanW/pi-taste@v0.1.0
+pi install git:github.com/LycanW/pi-taste@v0.2.0
 ```
 
 无需永久安装即可试用一次：
 
 ```bash
-pi -e git:github.com/LycanW/pi-taste@v0.1.0
+pi -e git:github.com/LycanW/pi-taste@v0.2.0
 ```
 
 当前版本已使用 Pi 0.84.4 验证，并要求 Node.js 22.19 或更高版本，与 Pi 自身的运行时要求一致。
@@ -39,7 +39,8 @@ pi -e git:github.com/LycanW/pi-taste@v0.1.0
 默认行为：
 
 - 自动学习已开启；
-- approved Taste 注入已开启；
+- approved Project Taste 注入已开启；
+- 每个项目默认关闭 Global Taste 注入，需显式开启；
 - Observer 跟随当前 Pi 主模型；
 - 自动学习在后台执行；
 - 基于模型的 Curator 永远不会自动运行。
@@ -133,7 +134,7 @@ Pi Taste 宁可漏掉证据不足的推断，也不会轻易保存错误偏好�
 在 TUI 中，Taste 状态显示在上下文窗口占用右侧：
 
 ```text
-… 12.3%/272k Taste:on                         model • thinking
+… 12.3%/272k Taste:on/project-only            model • thinking
 ```
 
 可能出现的标记：
@@ -141,6 +142,7 @@ Pi Taste 宁可漏掉证据不足的推断，也不会轻易保存错误偏好�
 - `Taste:on`：自动学习已开启；
 - `Taste:off`：自动学习已关闭；
 - `/inject-off`：approved Taste 注入已关闭；
+- `/project-only`：当前项目未启用 Global Taste；
 - `·N`：有 N 个 Observer 任务正在排队或运行；
 - `!`：最近一次 Observer 操作失败。
 
@@ -182,7 +184,7 @@ Footer 仅属于 UI，不会进入模型上下文。其他扩展的状态行会�
 
 ## 7. 审核和管理偏好
 
-Scope 采用 Command Code 的简单约定：在 Git 仓库中，手工 remember/import 默认写入 **Project Taste**；使用 `-g` 写入 **Global Taste**。不在 Git 仓库中时默认写入 Global。
+手工 remember/import 默认写入 **Project Taste**；使用 `-g` 写入 **Global Taste**。Project root 的判定很简单：存在 Git 根目录时使用最近的 Git 根目录，否则使用启动 Pi 时的当前工作目录；不要求存在 `.git`。
 
 查看准确路径和当前默认 scope：
 
@@ -217,7 +219,7 @@ Scope 采用 Command Code 的简单约定：在 Git 仓库中，手工 remember/
 导入 Command Code 风格的 Markdown 文件（每行一条 `- preference`）：
 
 ```text
-/taste import ./taste.md       # 在 Git 仓库中默认导入 Project
+/taste import ./taste.md       # 默认导入 Project
 /taste import ./taste.md -g    # 导入 Global
 ```
 
@@ -255,6 +257,9 @@ TUI 会显示有限预览并要求确认。脚本和 RPC 使用 `--yes`。确认
 ```text
 /taste on
 /taste off
+/taste global status
+/taste global on
+/taste global off
 /taste inject on
 /taste inject off
 ```
@@ -262,8 +267,13 @@ TUI 会显示有限预览并要求确认。脚本和 RPC 使用 `--yes`。确认
 两个开关相互独立：
 
 - `/taste off` 停止新的自动学习，但不会删除或禁用已有 approved Taste；
-- `/taste inject off` 停止提示词注入，但可以继续自动学习；
-- 重新开启注入后，会恢复当前 approved 快照。
+- `/taste global off` 是每个项目的默认值：只注入 Project Taste；
+- `/taste global on` 在当前项目中启用 Global Pi Taste 和 Global Command Code Taste，但 Project Taste 仍有更高优先级；
+- 项目专属设置保存在 `<project-root>/.pi/taste/config.json`，不会影响其他项目；
+- `/taste inject off` 停止全部提示词注入，但可以继续自动学习；
+- 重新开启注入后，会恢复项目设置允许的 approved 快照。
+
+Global 开关只控制注入，不会停止学习或删除记录。关闭时仍可查看和审核 Global 偏好。
 
 ## 9. 缓存稳定注入
 
@@ -276,7 +286,8 @@ Approved Taste 会以一个确定性快照附加到 system prompt。为保护 Pr
 - 自动移除 Command Code Confidence 后缀；
 - category 路径使用确定性排序；
 - pending 偏好和未应用的 Curator 计划不会影响提示词；
-- 只有有效 approved statement、scope、限制或注入设置发生变化时，快照才会改变。
+- 只有有效 approved statement、scope、限制或注入设置发生变化时，快照才会改变；
+- `/taste global on|off` 会生成新的稳定项目快照，不会加入动态元数据。
 
 `/taste status` 会显示当前快照摘要、条目数量和字节数。
 
@@ -330,6 +341,7 @@ Command Code Taste 导入保持只读，Curator 永远不会修改它们。
 /taste review [<id> approve|reject]
 /taste forget <id>
 /taste on | off
+/taste global [status|on|off]
 /taste inject on | off
 /taste model [status|inherit|select|set|only|add|remove|list] [provider/model|search]
 /taste curate [show|apply [--yes]|discard|rebuild|--model provider/model]
@@ -349,10 +361,12 @@ Global 状态：
 └── taste.md           # 自动生成、仅含 approved 的可读视图
 ```
 
-Project 状态只会在 Git 仓库中按需创建：
+Taste 为该工作区加载时，会在解析出的项目根目录下初始化 Project 状态。存在 Git 根目录时使用最近的 Git 根目录，否则使用 Pi 当前工作目录：
 
 ```text
-<git-root>/.pi/taste/
+<project-root>/.pi/taste/
+├── .gitignore         # 防止意外公开私有状态
+├── config.json        # 项目专属开关；Global Taste 默认关闭
 ├── events.jsonl
 ├── preferences.json
 └── taste.md
@@ -363,6 +377,7 @@ Project 状态只会在 Git 仓库中按需创建：
 - `preferences.json` 是权威状态；
 - `taste.md` 是自动生成的 approved-only 视图，也是活动卡片显示的 Taste 路径；
 - `events.jsonl` 是仅追加审计记录；
+- 项目 `config.json` 控制 Global Taste 是否参与当前项目；
 - 不支持通过直接编辑生成的 `taste.md` 来管理状态。
 
 写入过程使用原子替换和跨进程文件锁。在平台支持时，存储文件会使用私有权限创建。
@@ -373,11 +388,11 @@ Project 状态只会在 Git 仓库中按需创建：
 
 ```text
 ~/.commandcode/taste/taste.md
-<git-root>/.commandcode/taste/taste.md
-<git-root>/.commandcode/taste/<category>/taste.md
+<project-root>/.commandcode/taste/taste.md
+<project-root>/.commandcode/taste/<category>/taste.md
 ```
 
-Pi Taste 会规范化这些条目，并与 Pi 偏好去重。它永远不会修改 Command Code Taste 文件。可疑或格式异常的 category 路径会被排除。
+Pi Taste 会规范化这些条目，并与 Pi 偏好去重。它永远不会修改 Command Code Taste 文件。可疑或格式异常的 category 路径会被排除。Global Command Code Taste 使用相同的项目级 `/taste global on|off` 开关，并且默认关闭。
 
 ## 14. 配置文件
 
@@ -404,6 +419,17 @@ Pi Taste 会规范化这些条目，并与 Pi 偏好去重。它永远不会修�
 }
 ```
 
+默认 `<project-root>/.pi/taste/config.json`：
+
+```json
+{
+  "version": 1,
+  "includeGlobalTaste": false
+}
+```
+
+请使用 `/taste global on|off`，而不是手工编辑该文件。
+
 隔离测试可以使用 `PI_TASTE_DIR=/tmp/pi-taste-test` 重定向 global Taste 存储。它不会移动或复制 Provider 凭据。
 
 ## 15. 隐私与安全
@@ -421,7 +447,7 @@ Pi Taste 会规范化这些条目，并与 Pi 偏好去重。它永远不会修�
 
 ```text
 ~/.pi/agent/taste/
-<git-root>/.pi/taste/   # 需要保留 Project Taste 时
+<project-root>/.pi/taste/   # 需要保留 Project Taste 时
 ```
 
 可以为 global 状态创建私有加密备份：

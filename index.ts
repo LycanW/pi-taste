@@ -41,17 +41,21 @@ import {
 	loadCommandCodeTaste,
 	loadConfig,
 	loadPreferenceFile,
+	loadProjectConfig,
 	normalizePreferenceKey,
+	projectConfigPath,
 	projectStorePaths,
 	redactSensitive,
 	regenerateTaste,
 	saveConfig,
+	saveProjectConfig,
 } from "./storage.ts";
 import type {
 	AgentOutcome,
 	ObserverModelRef,
 	ObserverResult,
 	Preference,
+	ProjectTasteConfig,
 	ReductionChange,
 	StorePaths,
 	TasteConfig,
@@ -173,12 +177,16 @@ async function preferenceStores(cwd: string): Promise<{
 	projectRoot?: string;
 	globalPaths: StorePaths;
 	projectPaths?: StorePaths;
+	projectConfig: ProjectTasteConfig;
 	global: Preference[];
 	project: Preference[];
 }> {
 	const projectRoot = findProjectRoot(cwd);
 	const globalPaths = globalStorePaths();
 	const projectPaths = projectStorePaths(projectRoot);
+	const projectConfig = projectPaths
+		? await loadProjectConfig(projectPaths)
+		: { version: 1 as const, includeGlobalTaste: false };
 	const [globalFile, projectFile] = await Promise.all([
 		loadPreferenceFile(globalPaths),
 		projectPaths ? loadPreferenceFile(projectPaths) : Promise.resolve(undefined),
@@ -187,6 +195,7 @@ async function preferenceStores(cwd: string): Promise<{
 		projectRoot,
 		globalPaths,
 		projectPaths,
+		projectConfig,
 		global: globalFile.preferences,
 		project: projectFile?.preferences ?? [],
 	};
@@ -197,6 +206,7 @@ function buildTasteSection(
 	global: Preference[],
 	imported: Awaited<ReturnType<typeof loadCommandCodeTaste>>,
 	config: TasteConfig,
+	includeGlobalTaste: boolean,
 ): { section: string; count: number } {
 	const approvedStatements = (preferences: Preference[]) =>
 		preferences
@@ -212,14 +222,18 @@ function buildTasteSection(
 			heading: "Project (Command Code, read-only)",
 			statements: imported.filter((item) => item.scope === "project").map((item) => item.statement),
 		},
-		{
-			heading: "Global (Pi, approved)",
-			statements: approvedStatements(global),
-		},
-		{
-			heading: "Global (Command Code, read-only)",
-			statements: imported.filter((item) => item.scope === "global").map((item) => item.statement),
-		},
+		...(includeGlobalTaste
+			? [
+					{
+						heading: "Global (Pi, approved)",
+						statements: approvedStatements(global),
+					},
+					{
+						heading: "Global (Command Code, read-only)",
+						statements: imported.filter((item) => item.scope === "global").map((item) => item.statement),
+					},
+				]
+			: []),
 	];
 	const seen = new Set<string>();
 	const selectedGroups: Array<{ heading: string; statements: string[] }> = [];
@@ -267,16 +281,27 @@ async function injectedSystemPrompt(
 	eventSystemPrompt: string,
 	cwd: string,
 	config: TasteConfig,
-): Promise<{ systemPrompt: string; snapshot: InjectionSnapshot }> {
-	if (!config.injectionEnabled) {
-		return { systemPrompt: eventSystemPrompt, snapshot: { digest: "off", bytes: 0, count: 0 } };
-	}
+): Promise<{ systemPrompt: string; snapshot: InjectionSnapshot; includeGlobalTaste: boolean }> {
 	const stores = await preferenceStores(cwd);
+	if (!config.injectionEnabled) {
+		return {
+			systemPrompt: eventSystemPrompt,
+			snapshot: { digest: "off", bytes: 0, count: 0 },
+			includeGlobalTaste: stores.projectConfig.includeGlobalTaste,
+		};
+	}
 	const imported = config.injection.includeCommandCode ? await loadCommandCodeTaste(stores.projectRoot) : [];
-	const built = buildTasteSection(stores.project, stores.global, imported, config);
+	const built = buildTasteSection(
+		stores.project,
+		stores.global,
+		imported,
+		config,
+		stores.projectConfig.includeGlobalTaste,
+	);
 	return {
 		systemPrompt: built.section ? `${eventSystemPrompt}\n\n${built.section}\n` : eventSystemPrompt,
 		snapshot: snapshotForSection(built.section, built.count),
+		includeGlobalTaste: stores.projectConfig.includeGlobalTaste,
 	};
 }
 
@@ -374,6 +399,7 @@ function commandHelp(): string {
 		"/taste review [<id> approve|reject]",
 		"/taste forget <id>",
 		"/taste on | off",
+		"/taste global [status|on|off]",
 		"/taste inject on | off",
 		"/taste model [status|inherit|select|set|only|add|remove|list] [provider/model|search]",
 		"/taste curate [show|apply [--yes]|discard|rebuild|--model provider/model]",
@@ -393,6 +419,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 	let requestFooterRender: () => void = () => {};
 	let currentModel: { provider: string; id: string; reasoning: boolean } | undefined;
 	let currentThinkingLevel: string | undefined;
+	let includeGlobalTaste = false;
 	const refreshFooter = () => requestFooterRender();
 	const noSession = process.argv.includes("--no-session");
 	const isSubagentChild = process.env.PI_SUBAGENT_CHILD === "1";
@@ -503,6 +530,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		config = await loadConfig();
+		includeGlobalTaste = (await preferenceStores(ctx.cwd)).projectConfig.includeGlobalTaste;
 		previousOutcome = outcomeFromBranch(ctx);
 		lastEnqueuedFingerprint = undefined;
 		currentModel = ctx.model
@@ -514,6 +542,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 			() => ({
 				learningEnabled: config.learningEnabled,
 				injectionEnabled: config.injectionEnabled,
+				includeGlobalTaste,
 				queuedJobs,
 				hasError: Boolean(lastObserverError),
 				model: currentModel,
@@ -553,6 +582,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 		// can affect only future turns rather than racing into the turn that supplied it.
 		const injection = await injectedSystemPrompt(event.systemPrompt, ctx.cwd, config);
 		lastInjectionSnapshot = injection.snapshot;
+		includeGlobalTaste = injection.includeGlobalTaste;
 		refreshFooter();
 		if (config.learningEnabled && learningAllowedInProcess && event.prompt.trim()) {
 			const fingerprint = feedbackFingerprint(event.prompt, previousOutcome, sessionId(ctx));
@@ -581,8 +611,15 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					const imported = config.injection.includeCommandCode
 						? await loadCommandCodeTaste(stores.projectRoot)
 						: [];
+					includeGlobalTaste = stores.projectConfig.includeGlobalTaste;
 					if (config.injectionEnabled) {
-						const built = buildTasteSection(stores.project, stores.global, imported, config);
+						const built = buildTasteSection(
+							stores.project,
+							stores.global,
+							imported,
+							config,
+							stores.projectConfig.includeGlobalTaste,
+						);
 						lastInjectionSnapshot = snapshotForSection(built.section, built.count);
 					} else lastInjectionSnapshot = { digest: "off", bytes: 0, count: 0 };
 					const activeModel = resolveTasteModel(ctx, config);
@@ -591,12 +628,13 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 						[
 							`Taste learning: ${config.learningEnabled ? "on" : "off"}${learningAllowedInProcess ? "" : " (disabled for --no-session/subagent)"}`,
 							`Taste injection: ${config.injectionEnabled ? "on" : "off"}`,
+							`Global Taste in this project: ${stores.projectConfig.includeGlobalTaste ? "on" : "off (project-only)"}`,
 							`Taste model mode: ${config.observer.modelMode}`,
 							`Observer: ${activeModel ? `${activeModel.provider}/${activeModel.id}` : "unavailable"}`,
 							`Injection snapshot: ${lastInjectionSnapshot.digest} (${lastInjectionSnapshot.count} entries, ${lastInjectionSnapshot.bytes} bytes)`,
 							`Queue: ${queuedJobs}`,
 							`Global: ${statusCounts(stores.global)}`,
-							`Project: ${stores.projectRoot ? statusCounts(stores.project) : "no Git project"}`,
+							`Project: ${stores.projectRoot ? statusCounts(stores.project) : "unavailable"}`,
 							`Command Code read-only imports: ${imported.length}`,
 							`Curation plan: ${savedPlan ? `${savedPlan.id}${savedPlan.appliedAt ? " (applied)" : ` (${savedPlan.operations.length} operations)`}` : "none"}`,
 							...(lastObserverError ? [`Last Observer error: ${lastObserverError}`] : []),
@@ -721,7 +759,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 				if (subcommand === "paths") {
 					const stores = await preferenceStores(ctx.cwd);
 					const lines = [
-						`Default manual scope: ${stores.projectPaths ? "project (use -g for global)" : "global (no Git project)"}`,
+						`Default manual scope: ${stores.projectPaths ? "project (use -g for global)" : "global (project unavailable)"}`,
 						"",
 						`Global state: ${stores.globalPaths.preferences}`,
 						`Global Taste: ${stores.globalPaths.taste}`,
@@ -734,8 +772,9 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 							`Project state: ${stores.projectPaths.preferences}`,
 							`Project Taste: ${stores.projectPaths.taste}`,
 							`Project audit: ${stores.projectPaths.events}`,
+							`Project config: ${projectConfigPath(stores.projectPaths)}`,
 						);
-					} else lines.push("", "Project Taste: unavailable outside a Git repository");
+					} else lines.push("", "Project Taste: unavailable for the current working directory");
 					ctx.ui.notify(lines.join("\n"), "info");
 					return;
 				}
@@ -770,7 +809,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					const stores = await preferenceStores(ctx.cwd);
 					const scope = explicitScope ?? (stores.projectPaths ? "project" : "global");
 					const paths = scope === "project" ? stores.projectPaths : stores.globalPaths;
-					if (!paths) throw new Error("--project requires a Git project.");
+					if (!paths) throw new Error("Project Taste is unavailable for the current working directory.");
 					const prior = (paths.scope === "project" ? stores.project : stores.global).find(
 						(item) => item.key === normalizePreferenceKey(statement),
 					);
@@ -816,7 +855,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					const stores = await preferenceStores(ctx.cwd);
 					const scope = explicitScope ?? (stores.projectPaths ? "project" : "global");
 					const paths = scope === "project" ? stores.projectPaths : stores.globalPaths;
-					if (!paths) throw new Error("--project requires a Git project.");
+					if (!paths) throw new Error("Project Taste is unavailable for the current working directory.");
 					const preview = await readTasteImport(sourceInput, ctx.cwd);
 					if (!forced) {
 						if (ctx.mode !== "tui") throw new Error("Use --yes to confirm Taste import outside TUI mode.");
@@ -885,7 +924,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 						return;
 					}
 					const targetPaths = targetScope === "project" ? resolved.projectPaths : resolved.globalPaths;
-					if (!targetPaths) throw new Error("Moving to project Taste requires a Git project.");
+					if (!targetPaths) throw new Error("Project Taste is unavailable for the current working directory.");
 					const command = commandContext(ctx);
 					const moved = await movePreference(
 						resolved.paths,
@@ -1061,6 +1100,72 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					lastObserverError = undefined;
 					refreshFooter();
 					ctx.ui.notify(`Taste learning ${subcommand}. Existing approved Taste remains injectable.`, "info");
+					return;
+				}
+
+				if (subcommand === "global") {
+					const action = rest || "status";
+					if (!["status", "on", "off"].includes(action)) {
+						throw new Error("Usage: /taste global [status|on|off]");
+					}
+					const stores = await preferenceStores(ctx.cwd);
+					if (!stores.projectPaths) throw new Error("Project Taste is unavailable for the current working directory.");
+					if (action === "status") {
+						ctx.ui.notify(
+							`Global Taste in this project: ${stores.projectConfig.includeGlobalTaste ? "on" : "off (project-only)"}\nProject config: ${projectConfigPath(stores.projectPaths)}`,
+							"info",
+						);
+						return;
+					}
+					const enabled = action === "on";
+					if (stores.projectConfig.includeGlobalTaste === enabled) {
+						includeGlobalTaste = enabled;
+						refreshFooter();
+						ctx.ui.notify(`Global Taste is already ${action} for this project.`, "info");
+						return;
+					}
+					await saveProjectConfig(stores.projectPaths, {
+						version: 1,
+						includeGlobalTaste: enabled,
+					});
+					includeGlobalTaste = enabled;
+					config = await loadConfig();
+					if (config.injectionEnabled) {
+						const imported = config.injection.includeCommandCode
+							? await loadCommandCodeTaste(stores.projectRoot)
+							: [];
+						const built = buildTasteSection(stores.project, stores.global, imported, config, enabled);
+						lastInjectionSnapshot = snapshotForSection(built.section, built.count);
+					} else lastInjectionSnapshot = { digest: "off", bytes: 0, count: 0 };
+					refreshFooter();
+					const command = commandContext(ctx);
+					const event: TasteEvent = {
+						version: 1,
+						id: command.eventId,
+						timestamp: command.at,
+						type: "config",
+						...(command.sessionId ? { sessionId: command.sessionId } : {}),
+						...(stores.projectRoot ? { projectRoot: stores.projectRoot } : {}),
+						details: { action: "project-global-injection", enabled },
+					};
+					await appendAuditEvent(stores.globalPaths, stores.projectPaths, event);
+					safeAppendTasteActivity(pi, {
+						version: 1,
+						eventId: command.eventId,
+						timestamp: command.at,
+						kind: "config",
+						outcome: "changed",
+						title: `Global Taste ${enabled ? "enabled" : "disabled"} for this project`,
+						changes: [],
+						files: tasteActivityFiles(stores.globalPaths, stores.projectPaths, [], true),
+						detail: `Project config: ${projectConfigPath(stores.projectPaths)}`,
+					});
+					ctx.ui.notify(
+						enabled
+							? "Global Taste is enabled for this project. Project Taste still has priority."
+							: "Global Taste is disabled for this project. Only Project Taste will be injected.",
+						"info",
+					);
 					return;
 				}
 

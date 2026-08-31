@@ -4,7 +4,16 @@ import type { PreferenceStatus, StorePaths, TasteScope } from "./types.ts";
 
 export const TASTE_ACTIVITY_ENTRY = "taste-activity";
 
-export type TasteActivityKind = "observer" | "manual" | "import" | "move" | "review" | "forget" | "curate" | "error";
+export type TasteActivityKind =
+	| "observer"
+	| "manual"
+	| "import"
+	| "move"
+	| "review"
+	| "forget"
+	| "config"
+	| "curate"
+	| "error";
 export type TasteActivityOutcome = "changed" | "unchanged" | "skipped" | "failed";
 
 export interface TasteActivityChange {

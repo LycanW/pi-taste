@@ -13,13 +13,13 @@ Pi Taste is an independent open-source implementation inspired by the user-facin
 Install the Pi package directly from GitHub:
 
 ```bash
-pi install git:github.com/LycanW/pi-taste@v0.1.0
+pi install git:github.com/LycanW/pi-taste@v0.2.0
 ```
 
 Try it for one run without installing:
 
 ```bash
-pi -e git:github.com/LycanW/pi-taste@v0.1.0
+pi -e git:github.com/LycanW/pi-taste@v0.2.0
 ```
 
 This release is tested with Pi 0.84.4 and requires Node.js 22.19 or newer, matching Pi's runtime requirement.
@@ -39,7 +39,8 @@ Check the current state:
 Default behavior:
 
 - automatic learning is on;
-- approved Taste injection is on;
+- approved Project Taste injection is on;
+- Global Taste injection is off for each project unless explicitly enabled;
 - the Observer follows the current main Pi model;
 - automatic learning runs in the background;
 - model-assisted curation never runs automatically.
@@ -133,7 +134,7 @@ Pi Taste deliberately prefers missing a weak inference over storing a false pref
 In TUI mode, Taste status appears immediately after context-window usage:
 
 ```text
-… 12.3%/272k Taste:on                         model • thinking
+… 12.3%/272k Taste:on/project-only            model • thinking
 ```
 
 Possible indicators:
@@ -141,6 +142,7 @@ Possible indicators:
 - `Taste:on`: automatic learning is enabled;
 - `Taste:off`: automatic learning is disabled;
 - `/inject-off`: approved Taste injection is disabled;
+- `/project-only`: Global Taste is disabled for this project;
 - `·N`: N Observer jobs are queued or running;
 - `!`: the most recent Observer operation failed.
 
@@ -182,7 +184,7 @@ The Curator uses the same effective Taste model unless `/taste curate --model pr
 
 ## 7. Reviewing and managing preferences
 
-Scope follows Command Code's simple convention: inside a Git repository, manual remember/import defaults to **project** Taste; use `-g` for **global** Taste. Outside a Git repository, the default is global.
+Manual remember/import defaults to **project** Taste; use `-g` for **global** Taste. Project root resolution is simple: Pi Taste uses the nearest Git root when one exists, otherwise it uses the working directory where Pi was started. A `.git` directory is not required.
 
 Show the exact paths and current default scope:
 
@@ -217,7 +219,7 @@ Remember an approved global preference:
 Import a Command Code-style Markdown file (`- preference` per line):
 
 ```text
-/taste import ./taste.md       # project by default in a Git repository
+/taste import ./taste.md       # project by default
 /taste import ./taste.md -g    # global
 ```
 
@@ -255,6 +257,9 @@ Forgetting is audit-preserving: it changes the status to `rejected` rather than 
 ```text
 /taste on
 /taste off
+/taste global status
+/taste global on
+/taste global off
 /taste inject on
 /taste inject off
 ```
@@ -262,8 +267,13 @@ Forgetting is audit-preserving: it changes the status to `rejected` rather than 
 These switches are independent:
 
 - `/taste off` stops new automatic learning but does not remove or disable existing approved Taste;
-- `/taste inject off` stops prompt injection but can leave automatic learning enabled;
-- turning injection back on restores the approved snapshot.
+- `/taste global off` is the default for every project: only Project Taste is injected;
+- `/taste global on` enables Global Pi Taste and Global Command Code Taste in the current project, below Project Taste priority;
+- the project-specific choice is stored in `<project-root>/.pi/taste/config.json` and does not affect other projects;
+- `/taste inject off` stops all prompt injection but can leave automatic learning enabled;
+- turning injection back on restores the approved snapshot allowed by the project setting.
+
+The global switch controls injection, not learning or deletion. Global preferences remain stored and can still be reviewed while disabled.
 
 ## 9. Cache-stable injection
 
@@ -276,7 +286,8 @@ Approved Taste is appended to the system prompt as one deterministic snapshot. T
 - Command Code confidence suffixes are stripped;
 - category paths are sorted deterministically;
 - pending preferences and unapplied Curator plans do not affect the prompt;
-- the snapshot changes only when effective approved statements, scope, limits, or injection settings change.
+- the snapshot changes only when effective approved statements, scope, limits, or injection settings change;
+- changing `/taste global on|off` produces a new stable project snapshot without adding dynamic metadata.
 
 `/taste status` reports the current snapshot digest, entry count, and byte count.
 
@@ -330,6 +341,7 @@ Command Code Taste imports remain read-only and are never curated.
 /taste review [<id> approve|reject]
 /taste forget <id>
 /taste on | off
+/taste global [status|on|off]
 /taste inject on | off
 /taste model [status|inherit|select|set|only|add|remove|list] [provider/model|search]
 /taste curate [show|apply [--yes]|discard|rebuild|--model provider/model]
@@ -349,10 +361,12 @@ Global state:
 └── taste.md           # generated approved-only human-readable view
 ```
 
-Project state is created only when needed inside a Git repository:
+Project state is initialized under the resolved project root when Taste loads for that workspace. The root is the nearest Git root when available, otherwise Pi's working directory:
 
 ```text
-<git-root>/.pi/taste/
+<project-root>/.pi/taste/
+├── .gitignore         # prevents accidental publication of private state
+├── config.json        # per-project switch; Global Taste defaults off
 ├── events.jsonl
 ├── preferences.json
 └── taste.md
@@ -363,6 +377,7 @@ File roles:
 - `preferences.json` is authoritative;
 - `taste.md` is a generated approved-only view and the path shown in activity cards;
 - `events.jsonl` is the append-only audit trail;
+- project `config.json` controls whether Global Taste participates in this project;
 - editing generated `taste.md` directly is not the supported way to manage state.
 
 Writes use atomic replacement and a cross-process lock. Store files are created with private permissions where supported.
@@ -373,11 +388,11 @@ The following files are optional, read-only approved sources:
 
 ```text
 ~/.commandcode/taste/taste.md
-<git-root>/.commandcode/taste/taste.md
-<git-root>/.commandcode/taste/<category>/taste.md
+<project-root>/.commandcode/taste/taste.md
+<project-root>/.commandcode/taste/<category>/taste.md
 ```
 
-Pi Taste normalizes and deduplicates these entries against Pi preferences. It never modifies Command Code Taste files. Suspicious malformed category paths are excluded.
+Pi Taste normalizes and deduplicates these entries against Pi preferences. It never modifies Command Code Taste files. Suspicious malformed category paths are excluded. Global Command Code Taste follows the same per-project `/taste global on|off` switch and is off by default.
 
 ## 14. Configuration
 
@@ -404,6 +419,17 @@ Default `~/.pi/agent/taste/config.json`:
 }
 ```
 
+Default `<project-root>/.pi/taste/config.json`:
+
+```json
+{
+  "version": 1,
+  "includeGlobalTaste": false
+}
+```
+
+Use `/taste global on|off` instead of editing this file manually.
+
 For isolated tests, `PI_TASTE_DIR=/tmp/pi-taste-test` redirects only the global Taste store. It does not move or copy provider credentials.
 
 ## 15. Privacy and security
@@ -421,7 +447,7 @@ The extension source can be reinstalled from GitHub. To preserve learned behavio
 
 ```text
 ~/.pi/agent/taste/
-<git-root>/.pi/taste/   # when project Taste should also be preserved
+<project-root>/.pi/taste/   # when project Taste should also be preserved
 ```
 
 A private encrypted backup of global state can be created with:

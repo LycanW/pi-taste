@@ -6,6 +6,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 export interface TasteFooterState {
 	learningEnabled: boolean;
 	injectionEnabled: boolean;
+	includeGlobalTaste: boolean;
 	queuedJobs: number;
 	hasError: boolean;
 	model?: { provider: string; id: string; reasoning: boolean };
@@ -101,6 +102,7 @@ export function installTasteFooter(
 
 				let tasteLabel = state.learningEnabled ? "Taste:on" : "Taste:off";
 				if (!state.injectionEnabled) tasteLabel += "/inject-off";
+				else if (!state.includeGlobalTaste) tasteLabel += "/project-only";
 				if (state.queuedJobs > 0) tasteLabel += `·${state.queuedJobs}`;
 				if (state.learningEnabled && state.hasError) tasteLabel += "!";
 				stats.push(

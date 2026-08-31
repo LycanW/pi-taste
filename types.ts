@@ -39,6 +39,11 @@ export interface ObserverModelRef {
 	model: string;
 }
 
+export interface ProjectTasteConfig {
+	version: 1;
+	includeGlobalTaste: boolean;
+}
+
 export interface TasteConfig {
 	version: 1;
 	learningEnabled: boolean;

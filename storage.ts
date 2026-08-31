@@ -17,6 +17,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type {
 	ImportedTaste,
 	PreferenceFile,
+	ProjectTasteConfig,
 	StorePaths,
 	TasteConfig,
 	TasteEvent,
@@ -54,6 +55,10 @@ export function defaultConfig(): TasteConfig {
 	};
 }
 
+export function defaultProjectConfig(): ProjectTasteConfig {
+	return { version: STORE_VERSION, includeGlobalTaste: false };
+}
+
 export function emptyPreferenceFile(): PreferenceFile {
 	return { version: STORE_VERSION, updatedAt: new Date(0).toISOString(), preferences: [] };
 }
@@ -70,12 +75,13 @@ export function globalStorePaths(): StorePaths {
 	};
 }
 
-export function findProjectRoot(cwd: string): string | undefined {
-	let current = resolve(cwd);
+export function findProjectRoot(cwd: string): string {
+	const workspaceRoot = resolve(cwd);
+	let current = workspaceRoot;
 	while (true) {
 		if (existsSync(join(current, ".git"))) return current;
 		const parent = dirname(current);
-		if (parent === current) return undefined;
+		if (parent === current) return workspaceRoot;
 		current = parent;
 	}
 }
@@ -124,6 +130,34 @@ export async function ensureGlobalStore(): Promise<void> {
 	}
 	if (!(await exists(paths.events))) {
 		await writeFile(paths.events, "", { encoding: "utf8", mode: 0o600, flag: "a" });
+	}
+}
+
+export function projectConfigPath(paths: StorePaths): string {
+	return join(paths.dir, "config.json");
+}
+
+export async function ensureProjectStore(paths: StorePaths): Promise<void> {
+	if (paths.scope !== "project") throw new Error("Project store paths are required.");
+	await mkdir(paths.dir, { recursive: true, mode: 0o700 });
+	if (!(await exists(projectConfigPath(paths)))) {
+		await atomicWrite(projectConfigPath(paths), `${JSON.stringify(defaultProjectConfig(), null, 2)}\n`);
+	}
+	if (!(await exists(paths.preferences))) {
+		await atomicWrite(paths.preferences, `${JSON.stringify(emptyPreferenceFile(), null, 2)}\n`);
+	}
+	if (!(await exists(paths.taste))) {
+		await atomicWrite(paths.taste, renderTasteMarkdown(emptyPreferenceFile(), "project"));
+	}
+	if (!(await exists(paths.events))) {
+		await writeFile(paths.events, "", { encoding: "utf8", mode: 0o600, flag: "a" });
+	}
+	const ignorePath = join(paths.dir, ".gitignore");
+	if (!(await exists(ignorePath))) {
+		await atomicWrite(
+			ignorePath,
+			"# Pi Taste may contain private preference evidence and audit logs.\n*\n!.gitignore\n",
+		);
 	}
 }
 
@@ -189,6 +223,29 @@ export async function loadConfig(): Promise<TasteConfig> {
 
 export async function saveConfig(config: TasteConfig): Promise<void> {
 	await atomicWrite(join(globalTasteDir(), "config.json"), `${JSON.stringify(mergeConfig(config), null, 2)}\n`);
+}
+
+function mergeProjectConfig(value: unknown): ProjectTasteConfig {
+	const input = value && typeof value === "object" ? (value as Partial<ProjectTasteConfig>) : {};
+	return {
+		version: STORE_VERSION,
+		includeGlobalTaste: typeof input.includeGlobalTaste === "boolean" ? input.includeGlobalTaste : false,
+	};
+}
+
+export async function loadProjectConfig(paths: StorePaths): Promise<ProjectTasteConfig> {
+	await ensureProjectStore(paths);
+	const path = projectConfigPath(paths);
+	try {
+		return mergeProjectConfig(JSON.parse(await readFile(path, "utf8")) as unknown);
+	} catch (error) {
+		throw new Error(`Could not read project Taste config at ${path}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
+export async function saveProjectConfig(paths: StorePaths, config: ProjectTasteConfig): Promise<void> {
+	await ensureProjectStore(paths);
+	await atomicWrite(projectConfigPath(paths), `${JSON.stringify(mergeProjectConfig(config), null, 2)}\n`);
 }
 
 export async function loadPreferenceFile(paths: StorePaths): Promise<PreferenceFile> {

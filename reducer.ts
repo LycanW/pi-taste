@@ -137,7 +137,9 @@ function validateProposal(
 		return { reason: "evidence quote is not an exact excerpt of the current user feedback" };
 	}
 	if (proposal.scope !== "global" && proposal.scope !== "project") return { reason: "invalid scope" };
-	if (proposal.scope === "project" && !projectAvailable) return { reason: "project scope requested outside a Git project" };
+	if (proposal.scope === "project" && !projectAvailable) {
+		return { reason: "project scope is unavailable for the current working directory" };
+	}
 	if (proposal.signal !== "explicit_preference" && proposal.signal !== "implicit_correction") {
 		return { reason: "invalid evidence signal" };
 	}
