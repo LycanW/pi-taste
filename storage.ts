@@ -353,10 +353,29 @@ export function resolveTastePath(paths: StorePaths, relative: string): { absolut
 	return { absolute: join(paths.dir, ...segments), segments };
 }
 
+function isSafeCategorySegment(value: string): boolean {
+	if (!/^[\p{L}\p{N}][\p{L}\p{N}._-]{0,63}$/u.test(value) || value.endsWith(".")) return false;
+	return !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(value);
+}
+
+function categorySlug(name: string): string {
+	let slug = name
+		.normalize("NFKC")
+		.toLocaleLowerCase()
+		.replace(/[^\p{L}\p{N}._-]+/gu, "-")
+		.replace(/^[._-]+|[._-]+$/g, "")
+		.slice(0, 64)
+		.replace(/[._-]+$/g, "");
+	if (!isSafeCategorySegment(slug)) {
+		slug = `category-${createHash("sha256").update(name).digest("hex").slice(0, 12)}`;
+	}
+	return slug;
+}
+
 export function isValidTasteFilePath(segments: string[]): boolean {
 	return segments.length === 1 && segments[0] === "taste.md"
 		? true
-		: segments.length === 2 && segments[1] === "taste.md";
+		: segments.length === 2 && isSafeCategorySegment(segments[0]) && segments[1] === "taste.md";
 }
 
 /** Command Code reorganizeIfNeeded: category with >5 learnings becomes its own folder. */
@@ -369,7 +388,7 @@ export async function reorganizeIfNeeded(paths: StorePaths): Promise<Array<{ cat
 	if (categories.length === 0) return [];
 	let updated = content;
 	for (const category of categories) {
-		const slug = category.name.toLocaleLowerCase().replace(/\s+/g, "-");
+		const slug = categorySlug(category.name);
 		await mkdir(join(paths.dir, slug), { recursive: true, mode: 0o700 });
 		await atomicWrite(join(paths.dir, slug, "taste.md"), `# ${category.name}\n${category.learnings.join("\n")}\n`);
 		const replacement = `# ${category.name}\nSee [${slug}/taste.md](${slug}/taste.md)\n`;
@@ -382,14 +401,22 @@ export async function reorganizeIfNeeded(paths: StorePaths): Promise<Array<{ cat
 
 function parseCategories(content: string): Array<{ name: string; learningCount: number; learnings: string[]; fullSection: string }> {
 	const result: Array<{ name: string; learningCount: number; learnings: string[]; fullSection: string }> = [];
-	for (const section of content.split(/^# /gm)) {
-		if (!section.trim()) continue;
-		const lines = section.split("\n");
-		const name = (lines[0] ?? "").trim();
-		if (section.includes("See [")) continue;
-		const learnings = lines.filter((line) => line.trim().startsWith("- ") && line.includes("Confidence:"));
+	// Only explicit level-one headings define categories. Unheaded root bullets
+	// are valid Taste entries and must never be interpreted as a directory name.
+	const headings = [...content.matchAll(/^# ([^\r\n]+)[^\S\r\n]*(?:\r?\n|$)/gm)];
+	for (let index = 0; index < headings.length; index++) {
+		const match = headings[index];
+		const start = match.index ?? 0;
+		const end = headings[index + 1]?.index ?? content.length;
+		const fullSection = content.slice(start, end);
+		const body = fullSection.slice(match[0].length);
+		const name = match[1].trim();
+		if (!name || body.includes("See [")) continue;
+		const learnings = body
+			.split(/\r?\n/)
+			.filter((line) => line.trim().startsWith("- ") && line.includes("Confidence:"));
 		if (learnings.length > 0) {
-			result.push({ name, learningCount: learnings.length, learnings, fullSection: `# ${section}` });
+			result.push({ name, learningCount: learnings.length, learnings, fullSection });
 		}
 	}
 	return result;

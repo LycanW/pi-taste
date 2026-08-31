@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -55,6 +55,10 @@ test("resolveTastePath rejects traversal and absolute paths", () => {
 test("isValidTasteFilePath enforces Command Code path policy", () => {
 	assert.equal(isValidTasteFilePath(["taste.md"]), true);
 	assert.equal(isValidTasteFilePath(["category", "taste.md"]), true);
+	assert.equal(isValidTasteFilePath(["分类", "taste.md"]), true);
+	assert.equal(isValidTasteFilePath(["bad:windows", "taste.md"]), false);
+	assert.equal(isValidTasteFilePath(["CON", "taste.md"]), false);
+	assert.equal(isValidTasteFilePath(["x".repeat(65), "taste.md"]), false);
 	assert.equal(isValidTasteFilePath(["deep", "category", "taste.md"]), false);
 	assert.equal(isValidTasteFilePath(["other.md"]), false);
 });
@@ -87,21 +91,39 @@ test("runTasteTool writes and edits taste.md with Command Code semantics", async
 	}
 });
 
-test("reorganizeIfNeeded moves >5 learning categories into folders", async () => {
+test("reorganizeIfNeeded moves >5 learning categories into Windows-safe folders", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-taste-reorg-"));
 	try {
 		const paths = store(root);
 		await mkdir(paths.dir, { recursive: true });
 		const bullets = Array.from({ length: 6 }, (_, i) => `- Style rule ${i + 1}. Confidence: 0.8`);
-		const content = `# Styling\n${bullets.join("\n")}\n\n# Tools\n- Use pnpm. Confidence: 0.9\n`;
+		const content = `# Styling: Windows / GPU?\n${bullets.join("\n")}\n\n# Tools\n- Use pnpm. Confidence: 0.9\n`;
 		await writeFile(paths.taste, content);
 		const moved = await reorganizeIfNeeded(paths);
 		assert.equal(moved.length, 1);
-		assert.equal(moved[0].category, "Styling");
+		assert.equal(moved[0].category, "Styling: Windows / GPU?");
 		const rootAfter = await readFile(paths.taste, "utf8");
-		assert.match(rootAfter, /See \[styling\/taste.md\]/);
-		const categoryFile = await readFile(join(paths.dir, "styling", "taste.md"), "utf8");
+		assert.match(rootAfter, /See \[styling-windows-gpu\/taste.md\]/);
+		const categoryFile = await readFile(join(paths.dir, "styling-windows-gpu", "taste.md"), "utf8");
 		assert.match(categoryFile, /Style rule 1/);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("reorganizeIfNeeded never treats unheaded root learnings as a category", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-taste-root-bullets-"));
+	try {
+		const paths = store(root);
+		await mkdir(paths.dir, { recursive: true });
+		const content = Array.from(
+			{ length: 7 },
+			(_, index) => `- Project preference ${index + 1}: target 1080p at 60 FPS. Confidence: 1.0`,
+		).join("\n") + "\n";
+		await writeFile(paths.taste, content);
+		assert.deepEqual(await reorganizeIfNeeded(paths), []);
+		assert.equal(await readFile(paths.taste, "utf8"), content);
+		assert.deepEqual((await readdir(paths.dir)).sort(), ["taste.md"]);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

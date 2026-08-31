@@ -2,6 +2,15 @@
 
 All notable changes to Pi Taste are documented here.
 
+## 0.5.4 - 2026-09-01
+
+- Fix Windows `ENOENT` failures after a root `taste.md` grows beyond five
+  unheaded learnings: only explicit `# Category` sections are now reorganized.
+- Sanitize generated category slugs for Windows and cap them at 64 characters.
+- Reject model-supplied category paths containing Windows-invalid or reserved
+  names before attempting file writes.
+
+
 ## 0.5.3 - 2026-09-01
 
 - Mark the actual Project Taste file as changed in successful automatic-learning
