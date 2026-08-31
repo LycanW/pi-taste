@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -31,6 +31,7 @@ test("agent_settled sends the current user and assistant messages to the Learner
 		const handlers = new Map<string, (...args: any[]) => any>();
 		const entries: any[] = [];
 		let learnerPrompt = "";
+		let learnerCalls = 0;
 		const pi = {
 			on: (name: string, handler: (...args: any[]) => any) => handlers.set(name, handler),
 			registerCommand: () => {},
@@ -54,6 +55,19 @@ test("agent_settled sends the current user and assistant messages to the Learner
 				find: () => model,
 				complete: async (_model: any, context: any) => {
 					learnerPrompt = context.messages[0].content[0].text;
+					learnerCalls += 1;
+					if (learnerCalls === 1) {
+						return {
+							...stoppedResponse(),
+							content: [{
+								type: "toolCall",
+								id: "call-1",
+								name: "write_taste_file",
+								arguments: { path: "taste.md", content: "- Prefer quantitative benchmarks. Confidence: 1.0\n" },
+							}],
+							stopReason: "toolUse",
+						};
+					}
 					return stoppedResponse();
 				},
 			},
@@ -81,7 +95,12 @@ test("agent_settled sends the current user and assistant messages to the Learner
 		assert.match(newSection, /性能测试不要依赖人工进游戏/);
 		assert.match(newSection, /会建立量化测量台/);
 		assert.doesNotMatch(newSection, /previous response/);
-		assert.equal(entries.at(-1)?.data?.outcome, "unchanged");
+		assert.match(await readFile(join(root, ".pi", "taste", "taste.md"), "utf8"), /quantitative benchmarks/);
+		assert.equal(entries.at(-1)?.data?.outcome, "changed");
+		assert.deepEqual(
+			entries.at(-1)?.data?.files.map((file: any) => [file.scope, file.changed]),
+			[["global", false], ["project", true]],
+		);
 	} finally {
 		if (previousTasteDir === undefined) delete process.env.PI_TASTE_DIR;
 		else process.env.PI_TASTE_DIR = previousTasteDir;

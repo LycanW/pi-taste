@@ -337,8 +337,9 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 			lastLearnerError = undefined;
 			refreshFooter();
 			const changes = activityChanges(result.changes.map((change) => ({
-				action: change.action,
-				...(change.statement ? { statement: change.statement } : {}),
+				action: change.action.startsWith("wrote ") ? "wrote" : change.action.startsWith("edited ") ? "edited" : change.action,
+				...(change.statement || change.file ? { statement: change.statement ?? change.file } : {}),
+				scope: paths.scope,
 			})));
 			safeAppendTasteActivity(pi, {
 				version: 1,

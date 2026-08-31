@@ -2,6 +2,14 @@
 
 All notable changes to Pi Taste are documented here.
 
+## 0.5.3 - 2026-09-01
+
+- Mark the actual Project Taste file as changed in successful automatic-learning
+  activity cards; v0.5.2 wrote the file correctly but reported `changed: false`.
+- Strengthen lifecycle coverage to assert the Learner tool call, physical
+  `taste.md` write, and correct changed-file metadata.
+
+
 ## 0.5.2 - 2026-09-01
 
 - Fix automatic learning receiving an empty `NEW messages` section on every run.
