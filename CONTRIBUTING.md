@@ -46,8 +46,9 @@ run in pull requests:
 PI_TASTE_E2E_MODEL=provider/model npm run test:e2e
 ```
 
-Set `PI_BIN` when `pi` is not on `PATH`. Set `PI_TASTE_E2E_KEEP=1` to preserve
-an isolated failed run for diagnosis. The script verifies actual model learning,
+Set `PI_BIN` when `pi` is not on `PATH` on Unix. On Windows, set `PI_CLI` if
+Pi's global `dist/bundle/cli.js` cannot be discovered under `%APPDATA%\\npm`.
+Set `PI_TASTE_E2E_KEEP=1` to preserve an isolated failed run for diagnosis. The script verifies actual model learning,
 physical Project Taste persistence, the seven-unheaded-entry Windows regression,
 and injection into an independent second session.
 

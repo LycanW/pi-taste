@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,13 @@ if (!modelRef?.includes("/")) {
 const slash = modelRef.indexOf("/");
 const provider = modelRef.slice(0, slash);
 const model = modelRef.slice(slash + 1);
-const piBin = process.env.PI_BIN?.trim() || (process.platform === "win32" ? "pi.cmd" : "pi");
+const piBin = process.env.PI_BIN?.trim() || "pi";
+const windowsCli = process.env.PI_CLI?.trim() || (process.env.APPDATA
+	? join(process.env.APPDATA, "npm", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js")
+	: "");
+if (process.platform === "win32" && (!windowsCli || !existsSync(windowsCli))) {
+	throw new Error("Could not locate Pi cli.js. Set PI_CLI to the installed Pi CLI entry point.");
+}
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const root = mkdtempSync(join(tmpdir(), "pi-taste-real-e2e-"));
 const marker = `TASTE_E2E_${Date.now().toString(36).toUpperCase()}`;
@@ -33,17 +39,19 @@ const commonArgs = [
 	"--no-skills",
 	"--no-prompt-templates",
 	"--no-context-files",
+	"--no-tools",
 	"--session-dir", sessionDir,
 	"-p",
 ];
 const env = { ...process.env, PI_TASTE_DIR: globalTasteDir };
 function run(prompt) {
-	return execFileSync(piBin, [...commonArgs, prompt], {
+	const executable = process.platform === "win32" ? process.execPath : piBin;
+	const args = process.platform === "win32" ? [windowsCli, ...commonArgs, prompt] : [...commonArgs, prompt];
+	return execFileSync(executable, args, {
 		cwd: root,
 		env,
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
-		shell: process.platform === "win32",
 		timeout: 300_000,
 	});
 }
