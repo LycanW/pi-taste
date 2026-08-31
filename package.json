@@ -1,7 +1,7 @@
 {
   "name": "pi-taste",
-  "version": "0.5.5",
-  "description": "Local, auditable preference learning for the Pi coding agent",
+  "version": "0.5.6",
+  "description": "Local, transparent Taste learning for the Pi coding agent",
   "type": "module",
   "types": "./index.ts",
   "exports": {
@@ -74,5 +74,8 @@
     "@types/node": "^24.0.0",
     "tsx": "^4.21.0",
     "typescript": "5.9.3"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

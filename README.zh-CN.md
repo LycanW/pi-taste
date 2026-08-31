@@ -10,16 +10,16 @@ Pi Taste 是一个以 Command Code 的 Taste 工作流为灵感编写的独立�
 
 ## 1. 快速上手
 
-直接从 GitHub 安装 Pi 包：
+从 Pi package gallery / npm 安装：
 
 ```bash
-pi install git:github.com/LycanW/pi-taste@v0.5.5
+pi install npm:pi-taste@0.5.6
 ```
 
 不安装试运行：
 
 ```bash
-pi -e git:github.com/LycanW/pi-taste@v0.5.5
+pi -e npm:pi-taste@0.5.6
 ```
 
 本版本基于 Pi 0.84.4 测试，要求 Node.js 22.19 或更高版本（与 Pi 运行时要求一致）。

@@ -2,6 +2,15 @@
 
 All notable changes to Pi Taste are documented here.
 
+## 0.5.6 - 2026-09-01
+
+- Publish Pi Taste as the public `pi-taste` npm package for discovery on
+  `https://pi.dev/packages` via the `pi-package` keyword.
+- Make npm/package-gallery installation the primary README path.
+- Refresh package metadata to describe the current transparent, model-driven
+  `taste.md` workflow.
+
+
 ## 0.5.5 - 2026-09-01
 
 ### Test surface and injection fidelity

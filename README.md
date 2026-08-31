@@ -10,16 +10,16 @@ Pi Taste is an independent open-source project inspired by Command Code's Taste 
 
 ## 1. Quick start
 
-Install the Pi package directly from GitHub:
+Install from the Pi package gallery / npm:
 
 ```bash
-pi install git:github.com/LycanW/pi-taste@v0.5.5
+pi install npm:pi-taste@0.5.6
 ```
 
 Try it for one run without installing:
 
 ```bash
-pi -e git:github.com/LycanW/pi-taste@v0.5.5
+pi -e npm:pi-taste@0.5.6
 ```
 
 This release is tested with Pi 0.84.4 and requires Node.js 22.19 or newer, matching Pi's runtime requirement.
