@@ -52,6 +52,16 @@ Set `PI_TASTE_E2E_KEEP=1` to preserve an isolated failed run for diagnosis. The 
 physical Project Taste persistence, the seven-unheaded-entry Windows regression,
 and injection into an independent second session.
 
+## Releases
+
+The first npm version was published manually. Later versions use npm Trusted
+Publishing from `.github/workflows/publish.yml`; do not add an `NPM_TOKEN`.
+The npm trust relationship is restricted to `LycanW/pi-taste` and that exact
+workflow file. A GitHub Release publishes the matching `package.json` version
+with npm provenance after tests and pack validation pass.
+
+Release tags must be exactly `v<package.json version>`.
+
 ## Design constraints
 
 Changes should preserve these invariants:
