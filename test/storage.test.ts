@@ -30,12 +30,15 @@ test("parseLearnings reads Command Code style lines with confidence", () => {
 	const content = [
 		"- Prefers tabs over spaces. Confidence: 0.9",
 		"- Avoid worktrees. Confidence: 0.4",
+		"- 中文偏好无需英文句号 Confidence: 1.4",
 		"- Malformed line without confidence",
 	].join("\n");
 	const parsed = parseLearnings(content, "project");
-	assert.equal(parsed.length, 2);
+	assert.equal(parsed.length, 3);
 	assert.equal(parsed[0].confidence, 0.9);
 	assert.equal(parsed[0].scope, "project");
+	assert.equal(parsed[2].statement, "中文偏好无需英文句号");
+	assert.equal(parsed[2].confidence, 1);
 });
 
 test("countLearnings counts Confidence bullets", () => {

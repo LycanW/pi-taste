@@ -1,6 +1,6 @@
 {
   "name": "pi-taste",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Local, auditable preference learning for the Pi coding agent",
   "type": "module",
   "types": "./index.ts",
@@ -16,8 +16,10 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts",
-    "check": "npm run typecheck && npm test",
+    "test": "tsx --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "test:coverage": "tsx --test --test-concurrency=1 --experimental-test-coverage --test-coverage-lines=90 --test-coverage-branches=75 --test-coverage-functions=85 \"test/**/*.test.ts\"",
+    "test:e2e": "node test/e2e/run-real-provider.mjs",
+    "check": "npm run typecheck && npm run test:coverage",
     "pack:check": "npm pack --dry-run"
   },
   "keywords": [

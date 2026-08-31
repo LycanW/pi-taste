@@ -172,8 +172,6 @@ export async function saveConfig(config: TasteConfig): Promise<void> {
 // taste.md — Command Code compatible single-source file
 // ---------------------------------------------------------------------------
 
-const CONFIDENCE = /^- .*\. Confidence: (\d*\.?\d+)$/;
-
 export function countLearnings(content: string): number {
 	return content.split(/\r?\n/).filter((line) => line.trim().startsWith("-") && line.includes("Confidence:")).length;
 }
@@ -181,7 +179,7 @@ export function countLearnings(content: string): number {
 export function parseLearnings(content: string, scope: TasteScope): Preference[] {
 	const result: Preference[] = [];
 	for (const line of content.split(/\r?\n/)) {
-		const match = line.match(/^\s*-\s+((?:.+?\.)+)\s+Confidence:\s*(\d*\.?\d+)\s*$/);
+		const match = line.match(/^\s*-\s+(.+?)\s+Confidence:\s*(\d*\.?\d+)\s*$/);
 		if (!match) continue;
 		const statement = match[1].trim();
 		const confidence = match[2] ? Number.parseFloat(match[2]) : undefined;
@@ -247,13 +245,16 @@ async function buildTree(dir: string, prefix = ""): Promise<string> {
 	return out;
 }
 
-export async function loadPreferences(paths: StorePaths): Promise<Preference[]> {
+export async function readTasteContent(paths: StorePaths): Promise<string> {
 	try {
-		const content = await readFile(paths.taste, "utf8");
-		return parseLearnings(content, paths.scope);
+		return await readFile(paths.taste, "utf8");
 	} catch {
-		return [];
+		return "";
 	}
+}
+
+export async function loadPreferences(paths: StorePaths): Promise<Preference[]> {
+	return parseLearnings(await readTasteContent(paths), paths.scope);
 }
 
 export async function loadIncludeGlobalTaste(paths: StorePaths): Promise<boolean> {
@@ -441,7 +442,7 @@ export async function loadCommandCodeTaste(projectRoot?: string): Promise<Import
 					const key = `${source.scope}:${item.statement.toLocaleLowerCase()}`;
 					if (!seen.has(key)) {
 						seen.add(key);
-						imported.push({ scope: source.scope, statement: item.statement, sourcePath: path });
+						imported.push({ scope: source.scope, statement: item.statement, confidence: item.confidence, sourcePath: path });
 					}
 				}
 			} catch {}

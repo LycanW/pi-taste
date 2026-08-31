@@ -60,6 +60,7 @@ export interface StorePaths {
 export interface ImportedTaste {
 	scope: TasteScope;
 	statement: string;
+	confidence: number;
 	sourcePath: string;
 }
 

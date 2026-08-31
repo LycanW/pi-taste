@@ -2,6 +2,23 @@
 
 All notable changes to Pi Taste are documented here.
 
+## 0.5.5 - 2026-09-01
+
+### Test surface and injection fidelity
+
+- Expand the suite from 15 to 32 tests across lifecycle events, commands,
+  injection, queue serialization, provider errors, model routing, imports,
+  footer/activity rendering, path safety, and Windows regressions.
+- Add enforced aggregate coverage gates: 90% lines, 75% branches, and 85%
+  functions. Current coverage is 91.48% / 77.64% / 89.41%.
+- Run CI on Node 22 and 24 on both Linux and Windows.
+- Add a credential-gated, isolated real-provider two-session E2E runner.
+- Preserve raw Global and Project `taste.md` content during injection, including
+  headings, Confidence values, and `See [category/taste.md]` references.
+- Parse valid Confidence bullets even when the statement does not end in an
+  English period (important for Chinese and manually recorded preferences).
+
+
 ## 0.5.4 - 2026-09-01
 
 - Fix Windows `ENOENT` failures after a root `taste.md` grows beyond five

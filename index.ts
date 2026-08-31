@@ -26,6 +26,7 @@ import {
 	mutatePreferences,
 	normalizePreferenceKey,
 	projectStorePaths,
+	readTasteContent,
 	redactSensitive,
 	saveConfig,
 } from "./storage.ts";
@@ -151,34 +152,39 @@ async function preferenceStores(cwd: string): Promise<{
 	return { projectRoot, globalPaths, projectPaths, global, project };
 }
 
-function buildTasteSection(
-	project: Preference[],
-	global: Preference[],
+export function buildTasteSection(
+	projectContent: string,
+	globalContent: string,
 	imported: Awaited<ReturnType<typeof loadCommandCodeTaste>>,
 	config: TasteConfig,
 	includeGlobalTaste: boolean,
 ): { section: string; count: number } {
-	// Command Code getTasteContent(): global + project taste.md concatenated,
-	// then rendered inside a <taste> block for the main model.
-	const projectLines = project.map((item) => item.statement);
-	const globalLines = includeGlobalTaste ? global.map((item) => item.statement) : [];
-	const importedProject = imported.filter((item) => item.scope === "project").map((item) => item.statement);
-	const importedGlobal = includeGlobalTaste ? imported.filter((item) => item.scope === "global").map((item) => item.statement) : [];
-	const allLines = [...projectLines, ...globalLines, ...importedProject, ...importedGlobal];
-	const seen = new Set<string>();
-	const statements: string[] = [];
-	for (const statement of allLines) {
-		const key = normalizePreferenceKey(statement);
+	// Preserve the authoritative files verbatim: headings, Confidence values,
+	// and See [category/taste.md] references are all meaningful Taste content.
+	const chunks = [projectContent.trim(), ...(includeGlobalTaste ? [globalContent.trim()] : [])].filter(Boolean);
+	const seen = new Set(
+		[projectContent, ...(includeGlobalTaste ? [globalContent] : [])]
+			.flatMap((content) => content.split(/\r?\n/))
+			.map(normalizePreferenceKey)
+			.filter(Boolean),
+	);
+	const importedLines: string[] = [];
+	for (const item of imported) {
+		if (item.scope === "global" && !includeGlobalTaste) continue;
+		const key = normalizePreferenceKey(item.statement);
 		if (!key || seen.has(key)) continue;
-		const addition = `- ${statement}\n`;
-		if (statements.length + addition.length > config.injection.maxChars) break;
 		seen.add(key);
-		statements.push(statement);
+		importedLines.push(`- ${item.statement} Confidence: ${item.confidence.toFixed(1)}`);
 	}
-	const tasteContent = statements.join("\n");
+	if (importedLines.length > 0) chunks.push(importedLines.join("\n"));
+	let tasteContent = chunks.join("\n\n");
 	if (!tasteContent) return { section: "", count: 0 };
-	const section = `<taste>\nBelow is the complete content of the taste file.\nThis shows you what preferences are available and which categories might have additional details in separate files.\nIf you see references like "See [category/taste.md]", you MUST read that file using read_file to get the full preferences.\n\n--- Content of the taste file ---\n\n${tasteContent}\n\n--- End of the taste file ---\n</taste>`;
-	return { section, count: statements.length };
+	if (tasteContent.length > config.injection.maxChars) {
+		tasteContent = clipText(tasteContent, config.injection.maxChars);
+	}
+	const count = [...tasteContent.matchAll(/^\s*-\s+.+?\s+Confidence:\s*\d*\.?\d+\s*$/gm)].length;
+	const section = `<taste>\nBelow is the complete content of the taste file.\nThis shows you what preferences are available and which categories might have additional details in separate files.\nIf you see references like "See [category/taste.md]", you MUST use the read tool to read that file before applying its preferences.\n\n--- Content of the taste file ---\n\n${tasteContent}\n\n--- End of the taste file ---\n</taste>`;
+	return { section, count };
 }
 
 interface InjectionSnapshot {
@@ -207,8 +213,12 @@ async function injectedSystemPrompt(
 			snapshot: { digest: "off", bytes: 0, count: 0 },
 		};
 	}
-	const imported = await loadCommandCodeTaste(stores.projectRoot);
-	const built = buildTasteSection(stores.project, stores.global, imported, config, true);
+	const [projectContent, globalContent, imported] = await Promise.all([
+		stores.projectPaths ? readTasteContent(stores.projectPaths) : Promise.resolve(""),
+		readTasteContent(stores.globalPaths),
+		loadCommandCodeTaste(stores.projectRoot),
+	]);
+	const built = buildTasteSection(projectContent, globalContent, imported, config, true);
 	return {
 		systemPrompt: built.section ? `${eventSystemPrompt}\n\n${built.section}\n` : eventSystemPrompt,
 		snapshot: snapshotForSection(built.section, built.count),
@@ -507,9 +517,13 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 				if (subcommand === "status") {
 					config = await loadConfig();
 					const stores = await preferenceStores(ctx.cwd);
-					const imported = await loadCommandCodeTaste(stores.projectRoot);
+					const [projectContent, globalContent, imported] = await Promise.all([
+						stores.projectPaths ? readTasteContent(stores.projectPaths) : Promise.resolve(""),
+						readTasteContent(stores.globalPaths),
+						loadCommandCodeTaste(stores.projectRoot),
+					]);
 					if (config.learningEnabled) {
-						const built = buildTasteSection(stores.project, stores.global, imported, config, true);
+						const built = buildTasteSection(projectContent, globalContent, imported, config, true);
 						lastInjectionSnapshot = snapshotForSection(built.section, built.count);
 					} else lastInjectionSnapshot = { digest: "off", bytes: 0, count: 0 };
 					const activeModel = resolveTasteModel(ctx, config);
@@ -673,8 +687,12 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					lastLearnerError = undefined;
 					if (config.learningEnabled) {
 						const stores = await preferenceStores(ctx.cwd);
-						const imported = await loadCommandCodeTaste(stores.projectRoot);
-						const built = buildTasteSection(stores.project, stores.global, imported, config, true);
+						const [projectContent, globalContent, imported] = await Promise.all([
+							stores.projectPaths ? readTasteContent(stores.projectPaths) : Promise.resolve(""),
+							readTasteContent(stores.globalPaths),
+							loadCommandCodeTaste(stores.projectRoot),
+						]);
+						const built = buildTasteSection(projectContent, globalContent, imported, config, true);
 						lastInjectionSnapshot = snapshotForSection(built.section, built.count);
 					} else lastInjectionSnapshot = { digest: "off", bytes: 0, count: 0 };
 					refreshFooter();
