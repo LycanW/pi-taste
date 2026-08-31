@@ -13,13 +13,13 @@ Pi Taste 是受 Command Code 用户侧 Taste 工作流启发的独立开源实�
 直接从 GitHub 安装 Pi package：
 
 ```bash
-pi install git:github.com/LycanW/pi-taste@v0.4.0
+pi install git:github.com/LycanW/pi-taste@v0.5.0
 ```
 
 无需永久安装即可试用一次：
 
 ```bash
-pi -e git:github.com/LycanW/pi-taste@v0.4.0
+pi -e git:github.com/LycanW/pi-taste@v0.5.0
 ```
 
 当前版本已使用 Pi 0.84.4 验证，并要求 Node.js 22.19 或更高版本，与 Pi 自身的运行时要求一致。

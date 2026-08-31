@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Box, Text } from "@earendil-works/pi-tui";
 import type { Preference, StorePaths, TasteScope } from "./types.ts";
+import { Box, Text } from "@earendil-works/pi-tui";
 
 export const TASTE_ACTIVITY_ENTRY = "taste-activity";
 
@@ -16,19 +16,18 @@ export type TasteActivityKind =
 	| "error";
 export type TasteActivityOutcome = "changed" | "unchanged" | "skipped" | "failed";
 
-	export type TasteActivityChange = {
-		action: string;
-		statement?: string;
-		preferenceId?: string;
-		scope?: TasteScope;
-		status?: Preference["status"];
-		reason?: string;
-	};
+export interface TasteActivityChange {
+	action: string;
+	statement?: string;
+	preferenceId?: string;
+	scope?: TasteScope;
+	status?: string;
+	reason?: string;
+}
 
 export interface TasteActivityFile {
 	scope: TasteScope;
 	taste: string;
-	audit: string;
 	changed: boolean;
 }
 
@@ -47,29 +46,47 @@ export interface TasteActivityData {
 }
 
 function actionGlyph(action: string): string {
-	if (action === "added") return "+";
-	if (action === "approved") return "✓";
-	if (action === "reinforced") return "↑";
-	if (action === "rejected" || action === "forgotten") return "×";
-	if (action === "superseded") return "↪";
-	if (action === "skipped") return "·";
-	if (action === "curated") return "◆";
-	return "•";
+	switch (action) {
+		case "wrote":
+			return "✍";
+		case "edited":
+			return "✎";
+		case "added":
+			return "＋";
+		case "reinforced":
+			return "↑";
+		case "approved":
+			return "✓";
+		case "rejected":
+			return "✗";
+		case "deleted":
+			return "–";
+		case "reorganized":
+			return "⇄";
+		default:
+			return "·";
+	}
 }
 
-function statusEffect(status: Preference["status"] | undefined): string {
-	if (status === "approved") return "active next turn";
-	if (status === "pending") return "pending; not injected";
-	if (status === "rejected") return "not injected";
-	if (status === "superseded") return "no longer injected";
-	return "";
+function statusEffect(status: string | undefined): string {
+	switch (status) {
+		case "approved":
+			return "active next turn";
+		case "pending":
+			return "pending; not injected";
+		case "rejected":
+			return "not injected";
+		case "superseded":
+			return "no longer injected";
+		default:
+			return "";
+	}
 }
 
 function scopePaths(paths: StorePaths, changedScopes: Set<TasteScope>): TasteActivityFile {
 	return {
 		scope: paths.scope,
 		taste: paths.taste,
-		audit: paths.audit,
 		changed: changedScopes.has(paths.scope),
 	};
 }
@@ -140,15 +157,15 @@ export function installTasteActivityRenderer(pi: ExtensionAPI): void {
 
 		for (const file of data.files) {
 			if (file.changed) {
-				box.addChild(new Text(theme.fg("muted", `Taste [${file.scope}, approved view]: ${file.taste}`), 0, 0));
+				box.addChild(new Text(theme.fg("muted", `Taste [${file.scope}]: ${file.taste}`), 0, 0));
 			}
 			if (expanded || !file.changed) {
-				box.addChild(new Text(theme.fg("dim", `Audit [${file.scope}]: ${file.audit}`), 0, 0));
+				box.addChild(new Text(theme.fg("dim", `State [${file.scope}]: ${file.taste}`), 0, 0));
 			}
 		}
 		if (expanded) {
 			if (data.classification) box.addChild(new Text(theme.fg("dim", `Classification: ${data.classification}`), 0, 0));
-			if (data.model) box.addChild(new Text(theme.fg("dim", `Observer: ${data.model}`), 0, 0));
+			if (data.model) box.addChild(new Text(theme.fg("dim", `Learner: ${data.model}`), 0, 0));
 			box.addChild(new Text(theme.fg("dim", `Event: ${data.eventId}`), 0, 0));
 		}
 		return box;

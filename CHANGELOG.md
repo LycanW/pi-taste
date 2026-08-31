@@ -2,6 +2,31 @@
 
 All notable changes to Pi Taste are documented here.
 
+## 0.5.0 - 2026-09-01
+
+### v3: Command Code 1:1 learning pipeline (no cloud sync)
+
+- The Learner is now a full Command Code-style tool-calling agent: it reads/writes
+  taste.md directly via read_taste_file / write_taste_file / edit_taste_file.
+- No state machine: all learnings are injected (Command Code injects everything,
+  including low-confidence entries).
+- No audit log, no preferences.json, no events.jsonl, no Reducer decision path:
+  taste.md is the single source of truth in Command Code format:
+  `- statement. Confidence: 0-1`.
+- Injection uses the exact Command Code `<taste>...</taste>` block (global + project
+  concatenated, "See [category/taste.md]" references preserved).
+- Automatic category reorganization: categories with >5 learnings move into
+  `{category}/taste.md` with a `See [category/taste.md]` link in the root file.
+- Learner context mirrors Command Code: visible user/assistant text only, no
+  thinking, no tool results, no metadata. Previous-analysis window prevents
+  re-learning.
+- Kept Pi integration shell: `/taste` commands, footer status, activity cards,
+  model selector, post-settle trigger, single-concurrency queue.
+
+## 0.4.0 - 2026-08-31
+
+### v2 architecture (reverse-engineered from Command Code)
+
 ## 0.4.0 - 2026-08-31
 
 ### v2 architecture (reverse-engineered from Command Code)
