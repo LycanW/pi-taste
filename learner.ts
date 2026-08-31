@@ -31,7 +31,7 @@ export const LEARNER_TOOLS = [
 	{
 		name: "read_taste_file",
 		description: 'Read a taste file. Path is relative to the taste directory: "taste.md" or "{category}/taste.md".',
-		input_schema: {
+		parameters: {
 			type: "object",
 			properties: { path: { type: "string" } },
 			required: ["path"],
@@ -40,7 +40,7 @@ export const LEARNER_TOOLS = [
 	{
 		name: "write_taste_file",
 		description: 'Create or replace a taste file. Path MUST be "taste.md" or "{category}/taste.md".',
-		input_schema: {
+		parameters: {
 			type: "object",
 			properties: {
 				path: { type: "string" },
@@ -52,7 +52,7 @@ export const LEARNER_TOOLS = [
 	{
 		name: "edit_taste_file",
 		description: 'Replace the first occurrence of old_text with new_text in a taste file. Path MUST be "taste.md" or "{category}/taste.md".',
-		input_schema: {
+		parameters: {
 			type: "object",
 			properties: {
 				path: { type: "string" },

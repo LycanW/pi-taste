@@ -2,6 +2,14 @@
 
 All notable changes to Pi Taste are documented here.
 
+## 0.5.1 - 2026-09-01
+
+- Fix Learner tool schema for Pi: use `parameters` (Pi Tool type) instead of
+  Command Code's `input_schema`, which caused
+  `Cannot read properties of undefined (reading 'properties')` on some providers
+  (notably Windows). The Learner now sends provider-compatible tool definitions.
+
+
 ## 0.5.0 - 2026-09-01
 
 ### v3: Command Code 1:1 learning pipeline (no cloud sync)
