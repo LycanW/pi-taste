@@ -253,6 +253,28 @@ export async function readTasteContent(paths: StorePaths): Promise<string> {
 	}
 }
 
+export async function readTastePackageContent(paths: StorePaths): Promise<string> {
+	const chunks: string[] = [];
+	const rootContent = (await readTasteContent(paths)).trim();
+	if (rootContent) chunks.push(`<!-- Taste source: ${paths.taste} -->\n${rootContent}`);
+	try {
+		const entries = await readdir(paths.dir, { withFileTypes: true });
+		entries.sort((a, b) => a.name.localeCompare(b.name));
+		for (const entry of entries) {
+			if (!entry.isDirectory() || !isSafeCategorySegment(entry.name)) continue;
+			const categoryPath = join(paths.dir, entry.name, "taste.md");
+			let content = "";
+			try {
+				content = (await readFile(categoryPath, "utf8")).trim();
+			} catch {
+				continue;
+			}
+			if (content) chunks.push(`<!-- Taste source: ${categoryPath} -->\n${content}`);
+		}
+	} catch {}
+	return chunks.join("\n\n");
+}
+
 export async function loadPreferences(paths: StorePaths): Promise<Preference[]> {
 	return parseLearnings(await readTasteContent(paths), paths.scope);
 }

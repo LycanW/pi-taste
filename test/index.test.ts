@@ -186,6 +186,11 @@ test("before_agent_start preserves raw Global/Project Taste and off disables inj
 			join(projectDir, "taste.md"),
 			"# Project workflow\n- Prefer project benchmarks. Confidence: 0.7\nSee [graphics/taste.md](graphics/taste.md)\n",
 		);
+		await mkdir(join(projectDir, "graphics"));
+		await writeFile(
+			join(projectDir, "graphics", "taste.md"),
+			"# Graphics\n- Prefer stable frame pacing. Confidence: 0.95\n",
+		);
 		await writeFile(
 			join(harness.globalDir, "taste.md"),
 			"# Global style\n- Prefer concise answers. Confidence: 0.9\n",
@@ -198,6 +203,8 @@ test("before_agent_start preserves raw Global/Project Taste and off disables inj
 		assert.match(injected.systemPrompt, /# Project workflow/);
 		assert.match(injected.systemPrompt, /Confidence: 0\.7/);
 		assert.match(injected.systemPrompt, /See \[graphics\/taste\.md\]/);
+		assert.match(injected.systemPrompt, /graphics[/\\]taste\.md/);
+		assert.match(injected.systemPrompt, /Prefer stable frame pacing\. Confidence: 0\.95/);
 		assert.match(injected.systemPrompt, /# Global style/);
 		assert.match(injected.systemPrompt, /Confidence: 0\.9/);
 		assert.match(injected.systemPrompt, /<taste>[\s\S]*<\/taste>/);

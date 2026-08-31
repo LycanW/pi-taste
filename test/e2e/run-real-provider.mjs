@@ -51,9 +51,18 @@ function run(prompt) {
 let passed = false;
 try {
 	run(`Persistent project preference: Every compatibility report must begin with the exact marker ${marker}. Remember this for future turns. Reply only acknowledged.`);
-	const taste = readFileSync(join(projectTasteDir, "taste.md"), "utf8");
-	assert.match(taste, new RegExp(marker));
-	assert.equal(readdirSync(projectTasteDir, { withFileTypes: true }).some((entry) => entry.isDirectory()), false);
+	const entries = readdirSync(projectTasteDir, { withFileTypes: true });
+	const categoryDirs = entries.filter((entry) => entry.isDirectory());
+	for (const entry of categoryDirs) {
+		assert.match(entry.name, /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,63}$/u);
+		assert.doesNotMatch(entry.name, /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i);
+	}
+	const tasteFiles = [
+		join(projectTasteDir, "taste.md"),
+		...categoryDirs.map((entry) => join(projectTasteDir, entry.name, "taste.md")),
+	];
+	const completeTaste = tasteFiles.map((path) => readFileSync(path, "utf8")).join("\n");
+	assert.match(completeTaste, new RegExp(marker));
 	const second = run("What exact marker does the persistent project preference require at the beginning of every compatibility report? Reply with only that marker.");
 	assert.match(second, new RegExp(marker));
 	passed = true;

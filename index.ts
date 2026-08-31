@@ -26,7 +26,7 @@ import {
 	mutatePreferences,
 	normalizePreferenceKey,
 	projectStorePaths,
-	readTasteContent,
+	readTastePackageContent,
 	redactSensitive,
 	saveConfig,
 } from "./storage.ts";
@@ -183,7 +183,7 @@ export function buildTasteSection(
 		tasteContent = clipText(tasteContent, config.injection.maxChars);
 	}
 	const count = [...tasteContent.matchAll(/^\s*-\s+.+?\s+Confidence:\s*\d*\.?\d+\s*$/gm)].length;
-	const section = `<taste>\nBelow is the complete content of the taste file.\nThis shows you what preferences are available and which categories might have additional details in separate files.\nIf you see references like "See [category/taste.md]", you MUST use the read tool to read that file before applying its preferences.\n\n--- Content of the taste file ---\n\n${tasteContent}\n\n--- End of the taste file ---\n</taste>`;
+	const section = `<taste>\nBelow is the complete content of the taste file.\nThis shows you what preferences are available and which categories might have additional details in separate files.\nReferenced category files are expanded below when available. Source comments identify their exact paths; if a referenced file is not expanded, use the read tool with that source path before applying its preferences.\n\n--- Content of the taste file ---\n\n${tasteContent}\n\n--- End of the taste file ---\n</taste>`;
 	return { section, count };
 }
 
@@ -214,8 +214,8 @@ async function injectedSystemPrompt(
 		};
 	}
 	const [projectContent, globalContent, imported] = await Promise.all([
-		stores.projectPaths ? readTasteContent(stores.projectPaths) : Promise.resolve(""),
-		readTasteContent(stores.globalPaths),
+		stores.projectPaths ? readTastePackageContent(stores.projectPaths) : Promise.resolve(""),
+		readTastePackageContent(stores.globalPaths),
 		loadCommandCodeTaste(stores.projectRoot),
 	]);
 	const built = buildTasteSection(projectContent, globalContent, imported, config, true);
@@ -518,8 +518,8 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					config = await loadConfig();
 					const stores = await preferenceStores(ctx.cwd);
 					const [projectContent, globalContent, imported] = await Promise.all([
-						stores.projectPaths ? readTasteContent(stores.projectPaths) : Promise.resolve(""),
-						readTasteContent(stores.globalPaths),
+						stores.projectPaths ? readTastePackageContent(stores.projectPaths) : Promise.resolve(""),
+						readTastePackageContent(stores.globalPaths),
 						loadCommandCodeTaste(stores.projectRoot),
 					]);
 					if (config.learningEnabled) {
@@ -688,8 +688,8 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					if (config.learningEnabled) {
 						const stores = await preferenceStores(ctx.cwd);
 						const [projectContent, globalContent, imported] = await Promise.all([
-							stores.projectPaths ? readTasteContent(stores.projectPaths) : Promise.resolve(""),
-							readTasteContent(stores.globalPaths),
+							stores.projectPaths ? readTastePackageContent(stores.projectPaths) : Promise.resolve(""),
+							readTastePackageContent(stores.globalPaths),
 							loadCommandCodeTaste(stores.projectRoot),
 						]);
 						const built = buildTasteSection(projectContent, globalContent, imported, config, true);
