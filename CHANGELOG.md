@@ -2,6 +2,14 @@
 
 All notable changes to Pi Taste are documented here.
 
+## 0.3.1 - 2026-08-31
+
+- Start automatic Observer work only after the complete foreground Agent run has settled.
+- Capture raw interactive and RPC input, including mid-stream steering and follow-up corrections.
+- Snapshot in-progress Assistant text, tool calls, and completed tool results when a correction is inserted.
+- Keep Observer work asynchronous: later user turns do not wait for or cancel a running Observer.
+- Preserve serialized Observer processing without adding a fixed delay or changing the configured model.
+
 ## 0.3.0 - 2026-08-31
 
 - Apply least-scope automatic classification: Project by default, Global only from explicit cross-project evidence.

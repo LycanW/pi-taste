@@ -13,13 +13,13 @@ Pi Taste 是受 Command Code 用户侧 Taste 工作流启发的独立开源实�
 直接从 GitHub 安装 Pi package：
 
 ```bash
-pi install git:github.com/LycanW/pi-taste@v0.3.0
+pi install git:github.com/LycanW/pi-taste@v0.3.1
 ```
 
 无需永久安装即可试用一次：
 
 ```bash
-pi -e git:github.com/LycanW/pi-taste@v0.3.0
+pi -e git:github.com/LycanW/pi-taste@v0.3.1
 ```
 
 当前版本已使用 Pi 0.84.4 验证，并要求 Node.js 22.19 或更高版本，与 Pi 自身的运行时要求一致。
@@ -42,7 +42,7 @@ pi -e git:github.com/LycanW/pi-taste@v0.3.0
 - approved Project Taste 注入已开启；
 - 新初始化的项目默认开启 Global Taste 注入和自动 Global 学习，除非显式关闭；
 - Observer 跟随当前 Pi 主模型；
-- 自动学习在后台执行；
+- 自动学习会在前台 Agent 完全结束后启动，并可与后续轮次并行在后台继续；
 - 基于模型的 Curator 永远不会自动运行。
 
 常用入门命令：
@@ -60,6 +60,7 @@ pi -e git:github.com/LycanW/pi-taste@v0.3.0
 
 ```text
 上一轮 Agent 行为 + 当前用户反馈
+    → 当前前台 Agent 完全结束
     → 后台 Observer
     → 确定性校验与 Reducer
     → approved / pending / rejected / superseded 状态
@@ -68,7 +69,9 @@ pi -e git:github.com/LycanW/pi-taste@v0.3.0
 
 当前用户消息才是偏好证据。上一轮 Agent 回复、工具调用和修改文件仅作为“被评价的行为”，不能单独产生用户偏好。
 
-扩展会先为当前轮生成注入快照，再把当前反馈加入学习队列。因此，新学到的偏好只能影响后续轮次，不会反过来影响提供该证据的当前轮次。
+用户在 Agent 流式工作期间插入的 steering 和 follow-up 消息也会被捕获。Taste 会快照插入发生时已经可见的 Assistant 文本、工具调用和已完成工具结果；等完整前台运行结束后，再用这段进行中行为与插入纠正进行评价。扩展自行生成的消息会被排除，因为它们不是用户证据。
+
+扩展会先为当前轮生成注入快照，再暂存当前反馈。Taste 会等待 Pi 确认完整的前台 Agent 运行（包括重试和排队的 follow-up）已经结束，然后在后台启动 Observer。后续用户轮次不需要等待，也不会取消已经运行的 Observer。因此，新学到的偏好只能影响后续轮次，不会反过来影响提供该证据的当前轮次。
 
 使用 `--no-session` 启动的 Pi 进程，以及带有 `PI_SUBAGENT_CHILD=1` 标记的 `pi-subagents` 子进程，可以接收 approved Taste 注入，但不会产生学习事件。`PI_TASTE_ALLOW_NO_SESSION=1` 仅供隔离测试使用，并且不能绕过 subagent 子进程保护。
 
@@ -112,7 +115,7 @@ Taste [global, approved view]: /home/user/.pi/agent/taste/taste.md
 - 不消耗模型 Token；
 - 不改变提示词缓存前缀。
 
-Observer 在后台执行，所以活动卡片可能在主 Agent 回复过程中出现，也可能稍晚于主回复出现。
+Observer 只会在当前前台轮次完全结束后启动。活动卡片可能在下一轮开始前出现，也可能在后续某轮 Agent 回复过程中出现；后续轮次不需要等待后台学习。
 
 ## 4. 安全与持久化策略
 

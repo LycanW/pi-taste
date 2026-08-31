@@ -13,13 +13,13 @@ Pi Taste is an independent open-source implementation inspired by the user-facin
 Install the Pi package directly from GitHub:
 
 ```bash
-pi install git:github.com/LycanW/pi-taste@v0.3.0
+pi install git:github.com/LycanW/pi-taste@v0.3.1
 ```
 
 Try it for one run without installing:
 
 ```bash
-pi -e git:github.com/LycanW/pi-taste@v0.3.0
+pi -e git:github.com/LycanW/pi-taste@v0.3.1
 ```
 
 This release is tested with Pi 0.84.4 and requires Node.js 22.19 or newer, matching Pi's runtime requirement.
@@ -42,7 +42,7 @@ Default behavior:
 - approved Project Taste injection is on;
 - Global Taste injection and automatic Global learning are on for newly initialized projects unless explicitly disabled;
 - the Observer follows the current main Pi model;
-- automatic learning runs in the background;
+- automatic learning starts after the foreground Agent fully settles and may continue in the background alongside later turns;
 - model-assisted curation never runs automatically.
 
 Useful first commands:
@@ -60,6 +60,7 @@ When `/taste on` is active, an ordinary user turn follows this pipeline:
 
 ```text
 previous Agent behavior + current user feedback
+    → current foreground Agent fully settles
     → background Observer
     → deterministic validation and reduction
     → approved / pending / rejected / superseded state
@@ -68,7 +69,9 @@ previous Agent behavior + current user feedback
 
 The current user message is the preference evidence. The previous Agent response, tool calls, and changed files are included only as the behavior being evaluated; they cannot independently create a preference.
 
-The injection snapshot is created before the current feedback is queued for learning. Therefore, a newly learned preference can affect only a later turn, never the same turn that supplied its evidence.
+User steering and follow-up messages inserted while the Agent is streaming are also captured. Taste snapshots the Assistant text, tool calls, and completed tool results visible at the insertion point, then evaluates that in-progress behavior against the inserted correction after the complete foreground run settles. Extension-generated messages are excluded because they are not user evidence.
+
+The injection snapshot is created before the current feedback is held for learning. Taste waits until Pi reports that the complete foreground Agent run—including retries and queued follow-ups—has settled, then starts the Observer in the background. A later user turn does not wait for or cancel an Observer that is already running. Therefore, a newly learned preference can affect only a later turn, never the same turn that supplied its evidence.
 
 Pi processes launched with `--no-session`, and `pi-subagents` children marked by `PI_SUBAGENT_CHILD=1`, receive approved Taste injection but do not generate learning events. `PI_TASTE_ALLOW_NO_SESSION=1` is intended only for isolated testing and never overrides the subagent-child guard.
 
@@ -112,7 +115,7 @@ Activity cards are Pi custom session entries, not model messages. They:
 - consume no model tokens;
 - do not alter the prompt-cache prefix.
 
-Because the Observer runs in the background, its card may appear during or shortly after the main Agent response.
+Observer work starts only after the foreground turn settles. Its card may appear before the next user turn or during a later Agent response; later turns do not wait for background learning.
 
 ## 4. Safety and persistence policy
 

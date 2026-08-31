@@ -67,6 +67,12 @@ const MAX_OUTCOME_TEXT = 12_000;
 const MAX_EVENT_FEEDBACK = 8_000;
 const MAX_TOOL_ITEMS = 80;
 
+interface PendingFeedbackJob {
+	ctx: ExtensionContext;
+	feedback: string;
+	previous: AgentOutcome | undefined;
+}
+
 function eventId(): string {
 	return `e_${Date.now().toString(36)}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
 }
@@ -420,6 +426,9 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 	let currentModel: { provider: string; id: string; reasoning: boolean } | undefined;
 	let currentThinkingLevel: string | undefined;
 	let includeGlobalTaste = false;
+	let pendingFeedback: PendingFeedbackJob[] = [];
+	let currentRunMessages: any[] = [];
+	let liveAssistantMessage: any | undefined;
 	const refreshFooter = () => requestFooterRender();
 	const noSession = process.argv.includes("--no-session");
 	const isSubagentChild = process.env.PI_SUBAGENT_CHILD === "1";
@@ -534,11 +543,11 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	const enqueueFeedback = (ctx: ExtensionContext, feedback: string, previous: AgentOutcome | undefined) => {
+	const enqueueFeedback = (job: PendingFeedbackJob) => {
 		queuedJobs += 1;
 		refreshFooter();
 		queue = queue
-			.then(() => processFeedback(ctx, feedback, previous))
+			.then(() => processFeedback(job.ctx, job.feedback, job.previous))
 			.catch((error) => {
 				lastObserverError = error instanceof Error ? error.message : String(error);
 			})
@@ -546,6 +555,13 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 				queuedJobs -= 1;
 				refreshFooter();
 			});
+	};
+
+	const flushPendingFeedback = () => {
+		const jobs = pendingFeedback;
+		pendingFeedback = [];
+		for (const job of jobs) enqueueFeedback(job);
+		refreshFooter();
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -563,7 +579,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 				learningEnabled: config.learningEnabled,
 				injectionEnabled: config.injectionEnabled,
 				includeGlobalTaste,
-				queuedJobs,
+				queuedJobs: queuedJobs + pendingFeedback.length,
 				hasError: Boolean(lastObserverError),
 				model: currentModel,
 				thinkingLevel: currentThinkingLevel,
@@ -573,6 +589,44 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 			},
 		);
 		refreshFooter();
+	});
+
+	pi.on("input", (event, ctx) => {
+		if (
+			event.source === "extension" ||
+			!config.learningEnabled ||
+			!learningAllowedInProcess ||
+			!event.text.trim()
+		) {
+			return;
+		}
+		const inProgressOutcome = summarizeAgentMessages([
+			...currentRunMessages,
+			...(liveAssistantMessage ? [liveAssistantMessage] : []),
+		]);
+		const observedOutcome = event.streamingBehavior ? (inProgressOutcome ?? previousOutcome) : previousOutcome;
+		const fingerprint = feedbackFingerprint(event.text, observedOutcome, sessionId(ctx));
+		if (fingerprint === lastEnqueuedFingerprint) return;
+		lastEnqueuedFingerprint = fingerprint;
+		pendingFeedback.push({ ctx, feedback: event.text, previous: observedOutcome });
+		refreshFooter();
+	});
+
+	pi.on("agent_start", () => {
+		currentRunMessages = [];
+		liveAssistantMessage = undefined;
+	});
+
+	pi.on("message_update", (event) => {
+		if ((event.message as any)?.role === "assistant") liveAssistantMessage = event.message;
+	});
+
+	pi.on("message_end", (event) => {
+		const message = event.message as any;
+		if (message?.role === "assistant" || message?.role === "toolResult") {
+			currentRunMessages.push(message);
+		}
+		if (message?.role === "assistant") liveAssistantMessage = undefined;
 	});
 
 	pi.on("model_select", (event) => {
@@ -591,26 +645,26 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 		if (outcome) previousOutcome = outcome;
 	});
 
+	pi.on("agent_settled", () => {
+		// Start Observer work only after the complete foreground turn, including
+		// retries and queued follow-ups, has ended. Later turns may run in parallel.
+		flushPendingFeedback();
+	});
+
 	pi.on("session_shutdown", async () => {
-		// Do not discard the final turn's background evidence during quit, resume, or fork.
+		// Do not discard the final turn's evidence during quit, resume, or fork.
+		flushPendingFeedback();
 		await queue;
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		config = await loadConfig();
-		// Snapshot injection before enqueueing this message, so newly extracted Taste
-		// can affect only future turns rather than racing into the turn that supplied it.
+		// Snapshot injection after input capture but before post-turn observation, so
+		// newly extracted Taste can affect only future turns, never its evidence turn.
 		const injection = await injectedSystemPrompt(event.systemPrompt, ctx.cwd, config);
 		lastInjectionSnapshot = injection.snapshot;
 		includeGlobalTaste = injection.includeGlobalTaste;
 		refreshFooter();
-		if (config.learningEnabled && learningAllowedInProcess && event.prompt.trim()) {
-			const fingerprint = feedbackFingerprint(event.prompt, previousOutcome, sessionId(ctx));
-			if (fingerprint !== lastEnqueuedFingerprint) {
-				lastEnqueuedFingerprint = fingerprint;
-				enqueueFeedback(ctx, event.prompt, previousOutcome);
-			}
-		}
 		return { systemPrompt: injection.systemPrompt };
 	});
 
@@ -652,7 +706,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 							`Taste model mode: ${config.observer.modelMode}`,
 							`Observer: ${activeModel ? `${activeModel.provider}/${activeModel.id}` : "unavailable"}`,
 							`Injection snapshot: ${lastInjectionSnapshot.digest} (${lastInjectionSnapshot.count} entries, ${lastInjectionSnapshot.bytes} bytes)`,
-							`Queue: ${queuedJobs}`,
+							`Queue: ${queuedJobs + pendingFeedback.length}`,
 							`Global: ${statusCounts(stores.global)}`,
 							`Project: ${stores.projectRoot ? statusCounts(stores.project) : "unavailable"}`,
 							`Command Code read-only imports: ${imported.length}`,
