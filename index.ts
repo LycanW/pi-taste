@@ -25,53 +25,52 @@ import { readTasteImport } from "./importer.ts";
 import { observeFeedback, resolveTasteModel } from "./observer.ts";
 import {
 	forgetPreference,
-	isLowSignalFeedback,
 	movePreference,
-	reduceObserverResult,
+	reduceLearnerResult,
 	rememberPreference,
-	rememberPreferences,
-	setPreferenceReview,
+	setPreferenceStatus,
 } from "./reducer.ts";
 import {
 	appendEvent,
 	clipText,
+	countAuditLines,
 	ensureGlobalStore,
 	findProjectRoot,
 	findRetryableObserverEvent,
 	globalStorePaths,
 	loadCommandCodeTaste,
 	loadConfig,
-	loadPreferenceFile,
-	loadProjectConfig,
+	loadIncludeGlobalTaste,
+	loadPreferences,
 	normalizePreferenceKey,
-	projectConfigPath,
 	projectStorePaths,
 	redactSensitive,
-	regenerateTaste,
 	saveConfig,
-	saveProjectConfig,
+	savePreferencesUnlocked,
+	saveProjectIncludeGlobal,
 } from "./storage.ts";
 import type {
-	AgentOutcome,
+	InteractionContext,
+	LearnerResult,
 	ObserverModelRef,
-	ObserverResult,
 	Preference,
-	ProjectTasteConfig,
-	ReductionChange,
 	StorePaths,
 	TasteConfig,
 	TasteEvent,
 	TasteScope,
 } from "./types.ts";
 
-const MAX_OUTCOME_TEXT = 12_000;
-const MAX_EVENT_FEEDBACK = 8_000;
+const MAX_EVENT_USER_TEXT = 8_000;
+const MAX_EVENT_ASSISTANT_TEXT = 12_000;
 const MAX_TOOL_ITEMS = 80;
+
+// Current run assembly state (module-level so helper functions can read it).
+let currentRunMessages: any[] = [];
+let liveAssistantMessage: any | undefined;
 
 interface PendingFeedbackJob {
 	ctx: ExtensionContext;
-	feedback: string;
-	previous: AgentOutcome | undefined;
+	interaction: InteractionContext;
 	retryOf?: string;
 	evidenceEventId?: string;
 }
@@ -80,9 +79,9 @@ function eventId(): string {
 	return `e_${Date.now().toString(36)}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
 }
 
-function feedbackFingerprint(prompt: string, previous: AgentOutcome | undefined, session: string | undefined): string {
+function feedbackFingerprint(interaction: InteractionContext, session: string | undefined): string {
 	return createHash("sha256")
-		.update(`${session ?? ""}\0${previous?.at ?? ""}\0${prompt}`)
+		.update(`${session ?? ""}\0${interaction.userText}\0${interaction.assistantText}`)
 		.digest("hex");
 }
 
@@ -130,83 +129,61 @@ function contentText(message: any): string {
 		.join("\n");
 }
 
-function toolPath(args: Record<string, unknown> | undefined): string | undefined {
-	if (!args) return undefined;
-	const value = args.path ?? args.file_path;
-	return typeof value === "string" ? value.slice(0, 1_000) : undefined;
-}
-
-function summarizeAgentMessages(messages: any[]): AgentOutcome | undefined {
+function summarizeAssistantMessages(messages: any[]): string {
 	const texts: string[] = [];
-	const tools: AgentOutcome["toolSummary"] = [];
-	const changed = new Set<string>();
-	const errors = new Map<string, boolean>();
-	for (const message of messages) {
-		if (message?.role === "toolResult" && typeof message.toolCallId === "string") {
-			errors.set(message.toolCallId, Boolean(message.isError));
-		}
-	}
 	for (const message of messages) {
 		const text = contentText(message);
 		if (text) texts.push(text);
-		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-		for (const part of message.content) {
-			if (part?.type !== "toolCall" || typeof part.name !== "string") continue;
-			const path = toolPath(part.arguments);
-			tools.push({
-				name: part.name.slice(0, 100),
-				...(path ? { path } : {}),
-				...(errors.has(part.id) ? { isError: errors.get(part.id) } : {}),
-			});
-			if ((part.name === "edit" || part.name === "write") && path) changed.add(path);
-		}
 	}
-	if (texts.length === 0 && tools.length === 0) return undefined;
-	return {
-		at: new Date().toISOString(),
-		assistantText: clipText(redactSensitive(texts.join("\n\n")), MAX_OUTCOME_TEXT),
-		toolSummary: tools.slice(0, MAX_TOOL_ITEMS),
-		changedFiles: Array.from(changed).slice(0, MAX_TOOL_ITEMS),
-	};
+	const joined = texts.join("\n\n");
+	return joined ? clipText(redactSensitive(joined), MAX_EVENT_ASSISTANT_TEXT) : "";
 }
 
-function outcomeFromBranch(ctx: ExtensionContext): AgentOutcome | undefined {
+function visibleAssistantText(ctx: ExtensionContext): string {
 	const messages: any[] = [];
 	const branch = ctx.sessionManager.getBranch();
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry: any = branch[index];
-		if (entry?.type !== "message" || !entry.message) continue;
+		if (!entry || entry.type !== "message" || !entry.message) continue;
 		if (entry.message.role === "user") break;
 		messages.unshift(entry.message);
 	}
-	return summarizeAgentMessages(messages);
+	return summarizeAssistantMessages(messages);
+}
+
+function currentRunAssistantText(ctx: ExtensionContext): string {
+	// During streaming, the live assistant message plus completed prior messages
+	// of the current run are the visible assistant behavior.
+	const texts = summarizeAssistantMessages([
+		...currentRunMessages,
+		...(liveAssistantMessage ? [liveAssistantMessage] : []),
+	]);
+	return texts || visibleAssistantText(ctx);
 }
 
 async function preferenceStores(cwd: string): Promise<{
 	projectRoot?: string;
 	globalPaths: StorePaths;
 	projectPaths?: StorePaths;
-	projectConfig: ProjectTasteConfig;
+	includeGlobalTaste: boolean;
 	global: Preference[];
 	project: Preference[];
 }> {
 	const projectRoot = findProjectRoot(cwd);
 	const globalPaths = globalStorePaths();
 	const projectPaths = projectStorePaths(projectRoot);
-	const projectConfig = projectPaths
-		? await loadProjectConfig(projectPaths)
-		: { version: 1 as const, includeGlobalTaste: true };
-	const [globalFile, projectFile] = await Promise.all([
-		loadPreferenceFile(globalPaths),
-		projectPaths ? loadPreferenceFile(projectPaths) : Promise.resolve(undefined),
+	const [global, project, includeGlobalTaste] = await Promise.all([
+		loadPreferences(globalPaths),
+		projectPaths ? loadPreferences(projectPaths) : Promise.resolve([]),
+		projectPaths ? loadIncludeGlobalTaste(projectPaths) : Promise.resolve(true),
 	]);
 	return {
 		projectRoot,
 		globalPaths,
 		projectPaths,
-		projectConfig,
-		global: globalFile.preferences,
-		project: projectFile?.preferences ?? [],
+		includeGlobalTaste,
+		global,
+		project,
 	};
 }
 
@@ -220,7 +197,7 @@ function buildTasteSection(
 	const approvedStatements = (preferences: Preference[]) =>
 		preferences
 			.filter((item) => item.status === "approved")
-			.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+			.sort((a, b) => a.id.localeCompare(b.id))
 			.map((item) => item.statement);
 	const groups: Array<{ heading: string; statements: string[] }> = [
 		{
@@ -296,32 +273,25 @@ async function injectedSystemPrompt(
 		return {
 			systemPrompt: eventSystemPrompt,
 			snapshot: { digest: "off", bytes: 0, count: 0 },
-			includeGlobalTaste: stores.projectConfig.includeGlobalTaste,
+			includeGlobalTaste: stores.includeGlobalTaste,
 		};
 	}
-	const imported = config.injection.includeCommandCode ? await loadCommandCodeTaste(stores.projectRoot) : [];
+	const imported = loadCommandCodeTaste ? await loadCommandCodeTaste(stores.projectRoot) : [];
 	const built = buildTasteSection(
 		stores.project,
 		stores.global,
 		imported,
 		config,
-		stores.projectConfig.includeGlobalTaste,
+		stores.includeGlobalTaste,
 	);
 	return {
 		systemPrompt: built.section ? `${eventSystemPrompt}\n\n${built.section}\n` : eventSystemPrompt,
 		snapshot: snapshotForSection(built.section, built.count),
-		includeGlobalTaste: stores.projectConfig.includeGlobalTaste,
+		includeGlobalTaste: stores.includeGlobalTaste,
 	};
 }
 
-function syntheticLowSignalResult(): ObserverResult {
-	return {
-		classification: { kind: "acknowledgement", reason: "Deterministic low-signal acknowledgement filter" },
-		proposals: [],
-	};
-}
-
-function activityChanges(changes: ReductionChange[]): TasteActivityChange[] {
+function activityChanges(changes: Array<{ action: string; statement?: string; preferenceId?: string; scope?: TasteScope; status?: Preference["status"]; reason?: string }>): TasteActivityChange[] {
 	return changes.map((change) => ({
 		action: change.action,
 		...(change.statement ? { statement: change.statement } : {}),
@@ -332,7 +302,7 @@ function activityChanges(changes: ReductionChange[]): TasteActivityChange[] {
 	}));
 }
 
-function observerActivityTitle(changes: ReductionChange[]): string {
+function observerActivityTitle(changes: Array<{ action: string; status?: Preference["status"] }>): string {
 	const stored = changes.filter((change) => change.action !== "skipped");
 	if (stored.length === 0) return "Checked — no persistent change";
 	const approved = stored.filter((change) => change.status === "approved").length;
@@ -426,7 +396,6 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 	installTasteActivityRenderer(pi);
 	await ensureGlobalStore();
 	let config = await loadConfig();
-	let previousOutcome: AgentOutcome | undefined;
 	let queue: Promise<void> = Promise.resolve();
 	let queuedJobs = 0;
 	let lastObserverError: string | undefined;
@@ -438,8 +407,6 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 	let includeGlobalTaste = false;
 	let pendingFeedback: PendingFeedbackJob[] = [];
 	const retryingEventIds = new Set<string>();
-	let currentRunMessages: any[] = [];
-	let liveAssistantMessage: any | undefined;
 	const refreshFooter = () => requestFooterRender();
 	const noSession = process.argv.includes("--no-session");
 	const isSubagentChild = process.env.PI_SUBAGENT_CHILD === "1";
@@ -448,53 +415,55 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 	const learningAllowedInProcess = !isSubagentChild && (!noSession || allowNoSession);
 
 	const processFeedback = async (job: PendingFeedbackJob): Promise<void> => {
-		const { ctx, feedback: feedbackInput, previous, retryOf, evidenceEventId } = job;
+		const { ctx, interaction, retryOf, evidenceEventId } = job;
 		config = await loadConfig();
 		if ((!config.learningEnabled && !retryOf) || !learningAllowedInProcess) return;
 		const stores = await preferenceStores(ctx.cwd);
 		const id = eventId();
 		const at = new Date().toISOString();
-		const feedback = clipText(redactSensitive(feedbackInput), MAX_EVENT_FEEDBACK);
+		const userText = clipText(redactSensitive(interaction.userText), MAX_EVENT_USER_TEXT);
+		const assistantText = clipText(redactSensitive(interaction.assistantText), MAX_EVENT_ASSISTANT_TEXT);
 		const event: TasteEvent = {
-			version: 1,
+			version: 2,
 			id,
 			timestamp: at,
 			type: "observer",
 			...(retryOf ? { details: { retryOf } } : {}),
 			...(sessionId(ctx) ? { sessionId: sessionId(ctx) } : {}),
 			...(stores.projectRoot ? { projectRoot: stores.projectRoot } : {}),
-			interaction: {
-				...(previous ? { previousAgentOutcome: previous } : {}),
-				currentUserFeedback: feedback,
-			},
+			interaction: { userText, assistantText },
 		};
 		try {
-			let result: ObserverResult;
-			if (isLowSignalFeedback(feedback)) {
-				result = syntheticLowSignalResult();
-				event.observer = { status: "skipped", result, reason: "low-signal acknowledgement" };
-			} else {
-				const allowGlobalLearning = stores.projectConfig.includeGlobalTaste;
-				const visiblePreferences = allowGlobalLearning ? [...stores.project, ...stores.global] : stores.project;
-				const observed = await observeFeedback(
-					ctx,
-					config,
-					previous,
-					feedback,
-					visiblePreferences,
-					allowGlobalLearning,
-				);
-				result = observed.result;
-				event.observer = { status: "completed", result, usage: observed.usage };
-			}
-			const reduction = await reduceObserverResult(
+			let result: LearnerResult;
+			const allowGlobalLearning = stores.includeGlobalTaste;
+			const visiblePreferences = allowGlobalLearning ? [...stores.project, ...stores.global] : stores.project;
+			const existingTaste = (
+				await Promise.all([
+					loadPreferences(stores.globalPaths),
+					stores.projectPaths ? loadPreferences(stores.projectPaths) : Promise.resolve([]),
+				])
+			)
+				.flat()
+				.map((preference) => `- ${preference.statement}`)
+				.join("\n");
+			const observed = await observeFeedback(
+				ctx,
+				config,
+				interaction,
+				visiblePreferences,
+				existingTaste,
+				allowGlobalLearning,
+			);
+			result = observed.result;
+			event.observer = { status: "completed", result, usage: observed.usage };
+			const reduction = await reduceLearnerResult(
 				result,
 				{
 					eventId: evidenceEventId ?? id,
 					at,
-					userFeedback: feedback,
+					userFeedback: userText,
 					sessionId: sessionId(ctx),
-					allowGlobalLearning: stores.projectConfig.includeGlobalTaste,
+					allowGlobalLearning: stores.includeGlobalTaste,
 				},
 				stores.globalPaths,
 				stores.projectPaths,
@@ -509,30 +478,22 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 			refreshFooter();
 			const changes = activityChanges(reduction.changes);
 			const storedChanges = reduction.changes.filter((change) => change.action !== "skipped");
-			const lowSignal = event.observer?.status === "skipped";
 			safeAppendTasteActivity(pi, {
 				version: 1,
 				eventId: id,
 				timestamp: at,
 				kind: "observer",
-				outcome: lowSignal ? "skipped" : storedChanges.length > 0 ? "changed" : "unchanged",
+				outcome: storedChanges.length > 0 ? "changed" : "unchanged",
 				title: retryOf
-					? `Observer retry: ${lowSignal ? "skipped low-signal feedback" : observerActivityTitle(reduction.changes)}`
-					: lowSignal
-						? "Skipped low-signal feedback"
-						: observerActivityTitle(reduction.changes),
+					? `Observer retry: ${observerActivityTitle(reduction.changes)}`
+					: observerActivityTitle(reduction.changes),
 				changes,
 				files: tasteActivityFiles(stores.globalPaths, stores.projectPaths, changes, projectChanged),
-				classification: result.classification.kind,
 				...(event.observer?.usage
 					? { model: `${event.observer.usage.provider}/${event.observer.usage.model}` }
 					: {}),
 				detail: `${retryOf ? `Retry of failed event ${retryOf}. ` : ""}${
-					storedChanges.length === 0
-						? lowSignal
-							? "No Observer call was needed; no Taste file changed."
-							: `${result.classification.reason} No Taste file changed.`
-						: result.classification.reason
+					storedChanges.length === 0 ? "No Taste file changed." : "Taste file updated."
 				}`,
 			});
 		} catch (error) {
@@ -568,6 +529,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 			.then(() => processFeedback(job))
 			.catch((error) => {
 				lastObserverError = error instanceof Error ? error.message : String(error);
+				refreshFooter();
 			})
 			.finally(() => {
 				queuedJobs -= 1;
@@ -585,8 +547,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		config = await loadConfig();
-		includeGlobalTaste = (await preferenceStores(ctx.cwd)).projectConfig.includeGlobalTaste;
-		previousOutcome = outcomeFromBranch(ctx);
+		includeGlobalTaste = (await preferenceStores(ctx.cwd)).includeGlobalTaste;
 		lastEnqueuedFingerprint = undefined;
 		currentModel = ctx.model
 			? { provider: ctx.model.provider, id: ctx.model.id, reasoning: ctx.model.reasoning }
@@ -618,15 +579,17 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 		) {
 			return;
 		}
-		const inProgressOutcome = summarizeAgentMessages([
-			...currentRunMessages,
-			...(liveAssistantMessage ? [liveAssistantMessage] : []),
-		]);
-		const observedOutcome = event.streamingBehavior ? (inProgressOutcome ?? previousOutcome) : previousOutcome;
-		const fingerprint = feedbackFingerprint(event.text, observedOutcome, sessionId(ctx));
+		const assistantText = event.streamingBehavior
+			? currentRunAssistantText(ctx)
+			: visibleAssistantText(ctx);
+		const interaction: InteractionContext = {
+			userText: event.text,
+			assistantText,
+		};
+		const fingerprint = feedbackFingerprint(interaction, sessionId(ctx));
 		if (fingerprint === lastEnqueuedFingerprint) return;
 		lastEnqueuedFingerprint = fingerprint;
-		pendingFeedback.push({ ctx, feedback: event.text, previous: observedOutcome });
+		pendingFeedback.push({ ctx, interaction });
 		refreshFooter();
 	});
 
@@ -659,8 +622,6 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 
 	pi.on("agent_end", (event) => {
 		if ((event as typeof event & { willRetry?: boolean }).willRetry) return;
-		const outcome = summarizeAgentMessages(event.messages as any[]);
-		if (outcome) previousOutcome = outcome;
 	});
 
 	pi.on("agent_settled", () => {
@@ -700,17 +661,15 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 				if (subcommand === "status") {
 					config = await loadConfig();
 					const stores = await preferenceStores(ctx.cwd);
-					const imported = config.injection.includeCommandCode
-						? await loadCommandCodeTaste(stores.projectRoot)
-						: [];
-					includeGlobalTaste = stores.projectConfig.includeGlobalTaste;
+					const imported = await loadCommandCodeTaste(stores.projectRoot);
+					includeGlobalTaste = stores.includeGlobalTaste;
 					if (config.learningEnabled) {
 						const built = buildTasteSection(
 							stores.project,
 							stores.global,
 							imported,
 							config,
-							stores.projectConfig.includeGlobalTaste,
+							stores.includeGlobalTaste,
 						);
 						lastInjectionSnapshot = snapshotForSection(built.section, built.count);
 					} else lastInjectionSnapshot = { digest: "off", bytes: 0, count: 0 };
@@ -719,9 +678,9 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					ctx.ui.notify(
 						[
 							`Taste: ${config.learningEnabled ? "on (automatic learning + injection)" : "off (automatic learning + injection disabled)"}${learningAllowedInProcess ? "" : " (learning unavailable for --no-session/subagent)"}`,
-							`Global Taste in this project: ${globalTasteStatus(stores.projectConfig.includeGlobalTaste, config.learningEnabled)}`,
+							`Global Taste in this project: ${globalTasteStatus(stores.includeGlobalTaste, config.learningEnabled)}`,
 							`Taste model mode: ${config.observer.modelMode}`,
-							`Observer: ${activeModel ? `${activeModel.provider}/${activeModel.id}` : "unavailable"}`,
+							`Learner: ${activeModel ? `${activeModel.provider}/${activeModel.id}` : "unavailable"}`,
 							`Injection snapshot: ${lastInjectionSnapshot.digest} (${lastInjectionSnapshot.count} entries, ${lastInjectionSnapshot.bytes} bytes)`,
 							`Queue: ${queuedJobs + pendingFeedback.length}`,
 							`Global: ${statusCounts(stores.global)}`,
@@ -732,6 +691,346 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 						].join("\n"),
 						lastObserverError ? "warning" : "info",
 					);
+					return;
+				}
+
+				if (subcommand === "paths") {
+					const stores = await preferenceStores(ctx.cwd);
+					const lines = [
+						`Default manual scope: ${stores.projectPaths ? "project (use -g for global)" : "global (project unavailable)"}`,
+						"",
+						`Global taste.md: ${stores.globalPaths.taste}`,
+						`Global audit: ${stores.globalPaths.audit}`,
+					];
+					if (stores.projectPaths) {
+						lines.push(
+							"",
+							`Project root: ${stores.projectRoot}`,
+							`Project taste.md: ${stores.projectPaths.taste}`,
+							`Project audit: ${stores.projectPaths.audit}`,
+						);
+					} else lines.push("", "Project Taste: unavailable for the current working directory");
+					ctx.ui.notify(lines.join("\n"), "info");
+					return;
+				}
+
+				if (subcommand === "list") {
+					const filter = rest || "all";
+					if (!["all", "approved", "pending", "rejected", "superseded"].includes(filter)) {
+						throw new Error("List filter must be approved, pending, rejected, superseded, or all.");
+					}
+					const stores = await preferenceStores(ctx.cwd);
+					const items = [
+						...stores.project.map((preference) => ({ preference, label: "P" })),
+						...stores.global.map((preference) => ({ preference, label: "G" })),
+					].filter((item) => filter === "all" || item.preference.status === filter);
+					if (items.length === 0) {
+						ctx.ui.notify("No matching Pi Taste preferences.", "info");
+						return;
+					}
+					const visible = items.slice(0, 40).map(
+						({ preference, label }) =>
+							`[${label}] ${preference.id} ${preference.status} c=${preference.confidence.toFixed(2)} — ${preference.statement}`,
+					);
+					if (items.length > visible.length) visible.push(`… ${items.length - visible.length} more`);
+					ctx.ui.notify(visible.join("\n"), "info");
+					return;
+				}
+
+				if (subcommand === "remember") {
+					const explicitScope = requestedScope(rest);
+					const statement = stripControlFlags(rest);
+					if (!statement) throw new Error("Usage: /taste remember [-g|--global|--project] <preference>");
+					const stores = await preferenceStores(ctx.cwd);
+					const scope = explicitScope ?? (stores.projectPaths ? "project" : "global");
+					const paths = scope === "project" ? stores.projectPaths : stores.globalPaths;
+					if (!paths) throw new Error("Project Taste is unavailable for the current working directory.");
+					const command = commandContext(ctx);
+					const { preference, action } = await rememberPreference(paths, statement, command);
+					const event: TasteEvent = {
+						version: 2,
+						id: command.eventId,
+						timestamp: command.at,
+						type: "manual",
+						...(command.sessionId ? { sessionId: command.sessionId } : {}),
+						...(stores.projectRoot ? { projectRoot: stores.projectRoot } : {}),
+						details: { action: "remember", preferenceId: preference.id, scope: paths.scope, statement },
+					};
+					await appendAuditEvent(stores.globalPaths, paths.scope === "project" ? stores.projectPaths : undefined, event);
+					const changes: TasteActivityChange[] = [{
+						action,
+						statement: preference.statement,
+						preferenceId: preference.id,
+						scope: preference.scope,
+						status: preference.status,
+					}];
+					safeAppendTasteActivity(pi, {
+						version: 1,
+						eventId: command.eventId,
+						timestamp: command.at,
+						kind: "manual",
+						outcome: "changed",
+						title: "Preference remembered",
+						changes,
+						files: tasteActivityFiles(stores.globalPaths, stores.projectPaths, changes, paths.scope === "project"),
+					});
+					return;
+				}
+
+				if (subcommand === "import") {
+					const explicitScope = requestedScope(rest);
+					const forced = /(?:^|\s)--yes(?=\s|$)/.test(rest);
+					const sourceInput = stripControlFlags(rest, true);
+					if (!sourceInput) {
+						throw new Error("Usage: /taste import <markdown-file> [-g|--global|--project] [--yes]");
+					}
+					const stores = await preferenceStores(ctx.cwd);
+					const scope = explicitScope ?? (stores.projectPaths ? "project" : "global");
+					const paths = scope === "project" ? stores.projectPaths : stores.globalPaths;
+					if (!paths) throw new Error("Project Taste is unavailable for the current working directory.");
+					const preview = await readTasteImport(sourceInput, ctx.cwd);
+					if (!forced) {
+						if (ctx.mode !== "tui") throw new Error("Use --yes to confirm Taste import outside TUI mode.");
+						const visible = preview.statements.slice(0, 12).map((statement) => `- ${statement}`);
+						if (preview.statements.length > visible.length) {
+							visible.push(`… ${preview.statements.length - visible.length} more`);
+						}
+						const confirmed = await ctx.ui.confirm(
+							`Import ${preview.statements.length} preferences into ${scope} Taste?`,
+							[`Source: ${preview.sourcePath}`, `State: ${paths.taste}`, "", ...visible].join("\n"),
+						);
+						if (!confirmed) return;
+					}
+					const command = commandContext(ctx);
+					const remembered = [];
+					for (const statement of preview.statements) {
+						const outcome = await rememberPreference(paths, statement, command);
+						remembered.push(outcome);
+					}
+					const changes: TasteActivityChange[] = remembered.map(({ preference, action }) => ({
+						action,
+						statement: preference.statement,
+						preferenceId: preference.id,
+						scope: preference.scope,
+						status: preference.status,
+					}));
+					const event: TasteEvent = {
+						version: 2,
+						id: command.eventId,
+						timestamp: command.at,
+						type: "import",
+						...(command.sessionId ? { sessionId: command.sessionId } : {}),
+						...(stores.projectRoot ? { projectRoot: stores.projectRoot } : {}),
+						details: {
+							action: "import",
+							sourcePath: preview.sourcePath,
+							scope,
+							count: remembered.length,
+							skippedLines: preview.skipped,
+						},
+					};
+					await appendAuditEvent(stores.globalPaths, scope === "project" ? stores.projectPaths : undefined, event);
+					safeAppendTasteActivity(pi, {
+						version: 1,
+						eventId: command.eventId,
+						timestamp: command.at,
+						kind: "import",
+						outcome: "changed",
+						title: `Imported ${remembered.length} preferences into ${scope} Taste`,
+						changes,
+						files: tasteActivityFiles(stores.globalPaths, stores.projectPaths, changes, scope === "project"),
+						detail: `Source: ${preview.sourcePath}`,
+					});
+					return;
+				}
+
+				if (subcommand === "move") {
+					const id = restParts.find((token) => token !== "global" && token !== "project");
+					if (!id) throw new Error("Usage: /taste move <id> [global|project]");
+					let targetScope = restParts.find((token): token is TasteScope => token === "global" || token === "project");
+					if (!targetScope && ctx.mode === "tui") {
+						const selected = await ctx.ui.select("Move preference to", ["Global", "Project", "Cancel"]);
+						if (!selected || selected === "Cancel") return;
+						targetScope = selected === "Global" ? "global" : "project";
+					}
+					if (!targetScope) throw new Error("Usage: /taste move <id> global|project");
+					const resolved = await resolvePreference(ctx.cwd, id);
+					if (resolved.paths.scope === targetScope) {
+						ctx.ui.notify(`Preference ${resolved.preference.id} is already ${targetScope}.`, "info");
+						return;
+					}
+					const targetPaths = targetScope === "project" ? resolved.projectPaths : resolved.globalPaths;
+					if (!targetPaths) throw new Error("Project Taste is unavailable for the current working directory.");
+					const command = commandContext(ctx);
+					const moved = await movePreference(
+						resolved.paths,
+						targetPaths,
+						resolved.preference.id,
+						command,
+					);
+					const event: TasteEvent = {
+						version: 2,
+						id: command.eventId,
+						timestamp: command.at,
+						type: "move",
+						...(command.sessionId ? { sessionId: command.sessionId } : {}),
+						...(targetPaths.projectRoot ? { projectRoot: targetPaths.projectRoot } : {}),
+						details: {
+							action: "move",
+							from: resolved.paths.scope,
+							to: targetScope,
+							sourcePreferenceId: moved.source.id,
+							targetPreferenceId: moved.target.id,
+						},
+					};
+					await appendAuditEvent(
+						resolved.globalPaths,
+						resolved.paths.scope === "project" || targetScope === "project" ? resolved.projectPaths : undefined,
+						event,
+					);
+					const changes: TasteActivityChange[] = [
+						{
+							action: "superseded",
+							statement: moved.source.statement,
+							preferenceId: moved.source.id,
+							scope: moved.source.scope,
+							status: moved.source.status,
+						},
+						{
+							action: moved.targetExisted ? "approved" : "added",
+							statement: moved.target.statement,
+							preferenceId: moved.target.id,
+							scope: moved.target.scope,
+							status: moved.target.status,
+						},
+					];
+					safeAppendTasteActivity(pi, {
+						version: 1,
+						eventId: command.eventId,
+						timestamp: command.at,
+						kind: "move",
+						outcome: "changed",
+						title: `Preference moved — ${resolved.paths.scope} → ${targetScope}`,
+						changes,
+						files: tasteActivityFiles(resolved.globalPaths, resolved.projectPaths, changes, true),
+					});
+					return;
+				}
+
+				if (subcommand === "review") {
+					let id: string | undefined;
+					let action: "approve" | "reject" | undefined;
+					for (const token of restParts) {
+						if (token === "approve" || token === "reject") action = token;
+						else if (!id) id = token;
+					}
+					if (!id) {
+						const stores = await preferenceStores(ctx.cwd);
+						const pending = [...stores.project, ...stores.global].filter((item) => item.status === "pending");
+						if (pending.length === 0) {
+							ctx.ui.notify("No pending Taste preferences.", "info");
+							return;
+						}
+						if (!ctx.hasUI) {
+							ctx.ui.notify(pending.map((item) => `${item.id} — ${item.statement}`).join("\n"), "info");
+							return;
+						}
+						const labels = pending.map((item) => `${item.id} — ${clipText(item.statement, 90)}`);
+						const selected = await ctx.ui.select("Review pending Taste", labels);
+						if (!selected) return;
+						id = pending[labels.indexOf(selected)]?.id;
+						const selectedAction = await ctx.ui.select("Decision", ["Approve", "Reject", "Cancel"]);
+						if (selectedAction === "Approve") action = "approve";
+						if (selectedAction === "Reject") action = "reject";
+						if (!action) return;
+					}
+					if (!action) throw new Error("Usage: /taste review <id> approve|reject");
+					const resolved = await resolvePreference(ctx.cwd, id!);
+					const command = commandContext(ctx);
+					const preference = await setPreferenceStatus(
+						resolved.paths,
+						resolved.preference.id,
+						action === "approve" ? "approved" : "rejected",
+						command,
+					);
+					const event: TasteEvent = {
+						version: 2,
+						id: command.eventId,
+						timestamp: command.at,
+						type: "review",
+						...(command.sessionId ? { sessionId: command.sessionId } : {}),
+						details: { action, preferenceId: preference.id, statement: preference.statement },
+					};
+					await appendAuditEvent(
+						resolved.globalPaths,
+						resolved.paths.scope === "project" ? resolved.projectPaths : undefined,
+						event,
+					);
+					const changes: TasteActivityChange[] = [{
+						action: action === "approve" ? "approved" : "rejected",
+						statement: preference.statement,
+						preferenceId: preference.id,
+						scope: preference.scope,
+						status: preference.status,
+					}];
+					safeAppendTasteActivity(pi, {
+						version: 1,
+						eventId: command.eventId,
+						timestamp: command.at,
+						kind: "review",
+						outcome: "changed",
+						title: action === "approve" ? "Preference approved" : "Preference rejected",
+						changes,
+						files: tasteActivityFiles(
+							resolved.globalPaths,
+							resolved.projectPaths,
+							changes,
+							resolved.paths.scope === "project",
+						),
+					});
+					return;
+				}
+
+				if (subcommand === "forget") {
+					if (!rest) throw new Error("Usage: /taste forget <id>");
+					const resolved = await resolvePreference(ctx.cwd, rest);
+					const command = commandContext(ctx);
+					const preference = await forgetPreference(resolved.paths, resolved.preference.id, command);
+					const event: TasteEvent = {
+						version: 2,
+						id: command.eventId,
+						timestamp: command.at,
+						type: "forget",
+						...(command.sessionId ? { sessionId: command.sessionId } : {}),
+						details: { preferenceId: preference.id, statement: preference.statement },
+					};
+					await appendAuditEvent(
+						resolved.globalPaths,
+						resolved.paths.scope === "project" ? resolved.projectPaths : undefined,
+						event,
+					);
+					const changes: TasteActivityChange[] = [{
+						action: "forgotten",
+						statement: preference.statement,
+						preferenceId: preference.id,
+						scope: preference.scope,
+						status: preference.status,
+					}];
+					safeAppendTasteActivity(pi, {
+						version: 1,
+						eventId: command.eventId,
+						timestamp: command.at,
+						kind: "forget",
+						outcome: "changed",
+						title: "Preference forgotten",
+						changes,
+						files: tasteActivityFiles(
+							resolved.globalPaths,
+							resolved.projectPaths,
+							changes,
+							resolved.paths.scope === "project",
+						),
+					});
 					return;
 				}
 
@@ -753,8 +1052,10 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					}
 					const job: PendingFeedbackJob = {
 						ctx,
-						feedback: found.event.interaction.currentUserFeedback,
-						previous: found.event.interaction.previousAgentOutcome,
+						interaction: {
+							userText: found.event.interaction.userText,
+							assistantText: found.event.interaction.assistantText,
+						},
 						retryOf: found.event.id,
 						evidenceEventId: found.event.id,
 					};
@@ -782,7 +1083,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 						const choose = `Select a separate Taste model… (${custom})${config.observer.modelMode === "custom" ? " ✓" : ""}`;
 						const selectedMode = await ctx.ui.select("Taste model mode", [follow, choose, "Cancel"]);
 						if (!selectedMode || selectedMode === "Cancel") return;
-						if (selectedMode === follow) modelArgs = ["inherit"];
+						if (selectedMode === "follow") modelArgs = ["inherit"];
 						else {
 							const selected = await pickTasteModel(ctx, config);
 							if (!selected) return;
@@ -866,7 +1167,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					const stores = await preferenceStores(ctx.cwd);
 					const command = commandContext(ctx);
 					await appendEvent(stores.globalPaths, {
-						version: 1,
+						version: 2,
 						id: command.eventId,
 						timestamp: command.at,
 						type: "config",
@@ -884,343 +1185,6 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					return;
 				}
 
-				if (subcommand === "paths") {
-					const stores = await preferenceStores(ctx.cwd);
-					const lines = [
-						`Default manual scope: ${stores.projectPaths ? "project (use -g for global)" : "global (project unavailable)"}`,
-						"",
-						`Global state: ${stores.globalPaths.preferences}`,
-						`Global Taste: ${stores.globalPaths.taste}`,
-						`Global audit: ${stores.globalPaths.events}`,
-					];
-					if (stores.projectPaths) {
-						lines.push(
-							"",
-							`Project root: ${stores.projectRoot}`,
-							`Project state: ${stores.projectPaths.preferences}`,
-							`Project Taste: ${stores.projectPaths.taste}`,
-							`Project audit: ${stores.projectPaths.events}`,
-							`Project config: ${projectConfigPath(stores.projectPaths)}`,
-						);
-					} else lines.push("", "Project Taste: unavailable for the current working directory");
-					ctx.ui.notify(lines.join("\n"), "info");
-					return;
-				}
-
-				if (subcommand === "list") {
-					const filter = rest || "all";
-					if (!["all", "approved", "pending", "rejected", "superseded"].includes(filter)) {
-						throw new Error("List filter must be approved, pending, rejected, superseded, or all.");
-					}
-					const stores = await preferenceStores(ctx.cwd);
-					const items = [
-						...stores.project.map((preference) => ({ preference, label: "P" })),
-						...stores.global.map((preference) => ({ preference, label: "G" })),
-					].filter((item) => filter === "all" || item.preference.status === filter);
-					if (items.length === 0) {
-						ctx.ui.notify("No matching Pi Taste preferences.", "info");
-						return;
-					}
-					const visible = items.slice(0, 40).map(
-						({ preference, label }) =>
-							`[${label}] ${preference.id} ${preference.status} c=${preference.confidence.toFixed(2)} — ${preference.statement}`,
-					);
-					if (items.length > visible.length) visible.push(`… ${items.length - visible.length} more`);
-					ctx.ui.notify(visible.join("\n"), "info");
-					return;
-				}
-
-				if (subcommand === "remember") {
-					const explicitScope = requestedScope(rest);
-					const statement = stripControlFlags(rest);
-					if (!statement) throw new Error("Usage: /taste remember [-g|--global|--project] <preference>");
-					const stores = await preferenceStores(ctx.cwd);
-					const scope = explicitScope ?? (stores.projectPaths ? "project" : "global");
-					const paths = scope === "project" ? stores.projectPaths : stores.globalPaths;
-					if (!paths) throw new Error("Project Taste is unavailable for the current working directory.");
-					const prior = (paths.scope === "project" ? stores.project : stores.global).find(
-						(item) => item.key === normalizePreferenceKey(statement),
-					);
-					const command = commandContext(ctx);
-					const preference = await rememberPreference(paths, statement, command);
-					const event: TasteEvent = {
-						version: 1,
-						id: command.eventId,
-						timestamp: command.at,
-						type: "manual",
-						...(command.sessionId ? { sessionId: command.sessionId } : {}),
-						...(stores.projectRoot ? { projectRoot: stores.projectRoot } : {}),
-						details: { action: "remember", preferenceId: preference.id, scope: paths.scope, statement },
-					};
-					await appendAuditEvent(stores.globalPaths, paths.scope === "project" ? stores.projectPaths : undefined, event);
-					const changes: TasteActivityChange[] = [{
-						action: !prior ? "added" : prior.status === "approved" ? "reinforced" : "approved",
-						statement: preference.statement,
-						preferenceId: preference.id,
-						scope: preference.scope,
-						status: preference.status,
-					}];
-					safeAppendTasteActivity(pi, {
-						version: 1,
-						eventId: command.eventId,
-						timestamp: command.at,
-						kind: "manual",
-						outcome: "changed",
-						title: "Preference remembered",
-						changes,
-						files: tasteActivityFiles(stores.globalPaths, stores.projectPaths, changes, paths.scope === "project"),
-					});
-					return;
-				}
-
-				if (subcommand === "import") {
-					const explicitScope = requestedScope(rest);
-					const forced = /(?:^|\s)--yes(?=\s|$)/.test(rest);
-					const sourceInput = stripControlFlags(rest, true);
-					if (!sourceInput) {
-						throw new Error("Usage: /taste import <markdown-file> [-g|--global|--project] [--yes]");
-					}
-					const stores = await preferenceStores(ctx.cwd);
-					const scope = explicitScope ?? (stores.projectPaths ? "project" : "global");
-					const paths = scope === "project" ? stores.projectPaths : stores.globalPaths;
-					if (!paths) throw new Error("Project Taste is unavailable for the current working directory.");
-					const preview = await readTasteImport(sourceInput, ctx.cwd);
-					if (!forced) {
-						if (ctx.mode !== "tui") throw new Error("Use --yes to confirm Taste import outside TUI mode.");
-						const visible = preview.statements.slice(0, 12).map((statement) => `- ${statement}`);
-						if (preview.statements.length > visible.length) {
-							visible.push(`… ${preview.statements.length - visible.length} more`);
-						}
-						const confirmed = await ctx.ui.confirm(
-							`Import ${preview.statements.length} preferences into ${scope} Taste?`,
-							[`Source: ${preview.sourcePath}`, `State: ${paths.preferences}`, "", ...visible].join("\n"),
-						);
-						if (!confirmed) return;
-					}
-					const command = commandContext(ctx);
-					const remembered = await rememberPreferences(paths, preview.statements, command);
-					const changes: TasteActivityChange[] = remembered.map(({ preference, action }) => ({
-						action,
-						statement: preference.statement,
-						preferenceId: preference.id,
-						scope: preference.scope,
-						status: preference.status,
-					}));
-					const event: TasteEvent = {
-						version: 1,
-						id: command.eventId,
-						timestamp: command.at,
-						type: "import",
-						...(command.sessionId ? { sessionId: command.sessionId } : {}),
-						...(stores.projectRoot ? { projectRoot: stores.projectRoot } : {}),
-						details: {
-							action: "import",
-							sourcePath: preview.sourcePath,
-							scope,
-							count: remembered.length,
-							skippedLines: preview.skipped,
-						},
-					};
-					await appendAuditEvent(stores.globalPaths, scope === "project" ? stores.projectPaths : undefined, event);
-					safeAppendTasteActivity(pi, {
-						version: 1,
-						eventId: command.eventId,
-						timestamp: command.at,
-						kind: "import",
-						outcome: "changed",
-						title: `Imported ${remembered.length} preferences into ${scope} Taste`,
-						changes,
-						files: tasteActivityFiles(stores.globalPaths, stores.projectPaths, changes, scope === "project"),
-						detail: `Source: ${preview.sourcePath}`,
-					});
-					return;
-				}
-
-				if (subcommand === "move") {
-					const id = restParts.find((token) => token !== "global" && token !== "project");
-					if (!id) throw new Error("Usage: /taste move <id> [global|project]");
-					let targetScope = restParts.find((token): token is TasteScope => token === "global" || token === "project");
-					if (!targetScope && ctx.mode === "tui") {
-						const selected = await ctx.ui.select("Move preference to", ["Global", "Project", "Cancel"]);
-						if (!selected || selected === "Cancel") return;
-						targetScope = selected === "Global" ? "global" : "project";
-					}
-					if (!targetScope) throw new Error("Usage: /taste move <id> global|project");
-					const resolved = await resolvePreference(ctx.cwd, id);
-					if (resolved.paths.scope === targetScope) {
-						ctx.ui.notify(`Preference ${resolved.preference.id} is already ${targetScope}.`, "info");
-						return;
-					}
-					const targetPaths = targetScope === "project" ? resolved.projectPaths : resolved.globalPaths;
-					if (!targetPaths) throw new Error("Project Taste is unavailable for the current working directory.");
-					const command = commandContext(ctx);
-					const moved = await movePreference(
-						resolved.paths,
-						targetPaths,
-						resolved.preference.id,
-						command,
-					);
-					const event: TasteEvent = {
-						version: 1,
-						id: command.eventId,
-						timestamp: command.at,
-						type: "move",
-						...(command.sessionId ? { sessionId: command.sessionId } : {}),
-						...(targetPaths.projectRoot ? { projectRoot: targetPaths.projectRoot } : {}),
-						details: {
-							action: "move",
-							from: resolved.paths.scope,
-							to: targetScope,
-							sourcePreferenceId: moved.source.id,
-							targetPreferenceId: moved.target.id,
-						},
-					};
-					await appendAuditEvent(
-						resolved.globalPaths,
-						resolved.paths.scope === "project" || targetScope === "project" ? resolved.projectPaths : undefined,
-						event,
-					);
-					const changes: TasteActivityChange[] = [
-						{
-							action: "superseded",
-							statement: moved.source.statement,
-							preferenceId: moved.source.id,
-							scope: moved.source.scope,
-							status: moved.source.status,
-						},
-						{
-							action: moved.targetExisted ? "approved" : "added",
-							statement: moved.target.statement,
-							preferenceId: moved.target.id,
-							scope: moved.target.scope,
-							status: moved.target.status,
-						},
-					];
-					safeAppendTasteActivity(pi, {
-						version: 1,
-						eventId: command.eventId,
-						timestamp: command.at,
-						kind: "move",
-						outcome: "changed",
-						title: `Preference moved — ${resolved.paths.scope} → ${targetScope}`,
-						changes,
-						files: tasteActivityFiles(resolved.globalPaths, resolved.projectPaths, changes, true),
-					});
-					return;
-				}
-
-				if (subcommand === "review") {
-					let id: string | undefined;
-					let action: "approve" | "reject" | undefined;
-					for (const token of restParts) {
-						if (token === "approve" || token === "reject") action = token;
-						else if (!id) id = token;
-					}
-					if (!id) {
-						const stores = await preferenceStores(ctx.cwd);
-						const pending = [...stores.project, ...stores.global].filter((item) => item.status === "pending");
-						if (pending.length === 0) {
-							ctx.ui.notify("No pending Taste preferences.", "info");
-							return;
-						}
-						if (!ctx.hasUI) {
-							ctx.ui.notify(pending.map((item) => `${item.id} — ${item.statement}`).join("\n"), "info");
-							return;
-						}
-						const labels = pending.map((item) => `${item.id} — ${clipText(item.statement, 90)}`);
-						const selected = await ctx.ui.select("Review pending Taste", labels);
-						if (!selected) return;
-						id = pending[labels.indexOf(selected)]?.id;
-						const selectedAction = await ctx.ui.select("Decision", ["Approve", "Reject", "Cancel"]);
-						if (selectedAction === "Approve") action = "approve";
-						if (selectedAction === "Reject") action = "reject";
-						if (!action) return;
-					}
-					if (!action) throw new Error("Usage: /taste review <id> approve|reject");
-					const resolved = await resolvePreference(ctx.cwd, id!);
-					const command = commandContext(ctx);
-					const preference = await setPreferenceReview(resolved.paths, resolved.preference.id, action, command);
-					const event: TasteEvent = {
-						version: 1,
-						id: command.eventId,
-						timestamp: command.at,
-						type: "review",
-						...(command.sessionId ? { sessionId: command.sessionId } : {}),
-						details: { action, preferenceId: preference.id, statement: preference.statement },
-					};
-					await appendAuditEvent(
-						resolved.globalPaths,
-						resolved.paths.scope === "project" ? resolved.projectPaths : undefined,
-						event,
-					);
-					const changes: TasteActivityChange[] = [{
-						action: action === "approve" ? "approved" : "rejected",
-						statement: preference.statement,
-						preferenceId: preference.id,
-						scope: preference.scope,
-						status: preference.status,
-					}];
-					safeAppendTasteActivity(pi, {
-						version: 1,
-						eventId: command.eventId,
-						timestamp: command.at,
-						kind: "review",
-						outcome: "changed",
-						title: action === "approve" ? "Preference approved" : "Preference rejected",
-						changes,
-						files: tasteActivityFiles(
-							resolved.globalPaths,
-							resolved.projectPaths,
-							changes,
-							resolved.paths.scope === "project",
-						),
-					});
-					return;
-				}
-
-				if (subcommand === "forget") {
-					if (!rest) throw new Error("Usage: /taste forget <id>");
-					const resolved = await resolvePreference(ctx.cwd, rest);
-					const command = commandContext(ctx);
-					const preference = await forgetPreference(resolved.paths, resolved.preference.id, command);
-					const event: TasteEvent = {
-						version: 1,
-						id: command.eventId,
-						timestamp: command.at,
-						type: "forget",
-						...(command.sessionId ? { sessionId: command.sessionId } : {}),
-						details: { preferenceId: preference.id, statement: preference.statement },
-					};
-					await appendAuditEvent(
-						resolved.globalPaths,
-						resolved.paths.scope === "project" ? resolved.projectPaths : undefined,
-						event,
-					);
-					const changes: TasteActivityChange[] = [{
-						action: "forgotten",
-						statement: preference.statement,
-						preferenceId: preference.id,
-						scope: preference.scope,
-						status: preference.status,
-					}];
-					safeAppendTasteActivity(pi, {
-						version: 1,
-						eventId: command.eventId,
-						timestamp: command.at,
-						kind: "forget",
-						outcome: "changed",
-						title: "Preference forgotten",
-						changes,
-						files: tasteActivityFiles(
-							resolved.globalPaths,
-							resolved.projectPaths,
-							changes,
-							resolved.paths.scope === "project",
-						),
-					});
-					return;
-				}
-
 				if (subcommand === "on" || subcommand === "off") {
 					config = await loadConfig();
 					const enabled = subcommand === "on";
@@ -1229,16 +1193,14 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					lastObserverError = undefined;
 					if (enabled) {
 						const stores = await preferenceStores(ctx.cwd);
-						includeGlobalTaste = stores.projectConfig.includeGlobalTaste;
-						const imported = config.injection.includeCommandCode
-							? await loadCommandCodeTaste(stores.projectRoot)
-							: [];
+						includeGlobalTaste = stores.includeGlobalTaste;
+						const imported = await loadCommandCodeTaste(stores.projectRoot);
 						const built = buildTasteSection(
 							stores.project,
 							stores.global,
 							imported,
 							config,
-							stores.projectConfig.includeGlobalTaste,
+							stores.includeGlobalTaste,
 						);
 						lastInjectionSnapshot = snapshotForSection(built.section, built.count);
 					} else lastInjectionSnapshot = { digest: "off", bytes: 0, count: 0 };
@@ -1262,35 +1224,30 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					if (!stores.projectPaths) throw new Error("Project Taste is unavailable for the current working directory.");
 					if (action === "status") {
 						ctx.ui.notify(
-							`Global Taste in this project: ${globalTasteStatus(stores.projectConfig.includeGlobalTaste, config.learningEnabled)}\nProject config: ${projectConfigPath(stores.projectPaths)}`,
+							`Global Taste in this project: ${globalTasteStatus(stores.includeGlobalTaste, config.learningEnabled)}\nProject taste.md: ${stores.projectPaths.taste}`,
 							"info",
 						);
 						return;
 					}
 					const enabled = action === "on";
-					if (stores.projectConfig.includeGlobalTaste === enabled) {
+					if (stores.includeGlobalTaste === enabled) {
 						includeGlobalTaste = enabled;
 						refreshFooter();
 						ctx.ui.notify(`Global Taste is already ${action} for this project.`, "info");
 						return;
 					}
-					await saveProjectConfig(stores.projectPaths, {
-						version: 1,
-						includeGlobalTaste: enabled,
-					});
+					await saveProjectIncludeGlobal(stores.projectPaths, enabled);
 					includeGlobalTaste = enabled;
 					config = await loadConfig();
 					if (config.learningEnabled) {
-						const imported = config.injection.includeCommandCode
-							? await loadCommandCodeTaste(stores.projectRoot)
-							: [];
+						const imported = await loadCommandCodeTaste(stores.projectRoot);
 						const built = buildTasteSection(stores.project, stores.global, imported, config, enabled);
 						lastInjectionSnapshot = snapshotForSection(built.section, built.count);
 					} else lastInjectionSnapshot = { digest: "off", bytes: 0, count: 0 };
 					refreshFooter();
 					const command = commandContext(ctx);
 					const event: TasteEvent = {
-						version: 1,
+						version: 2,
 						id: command.eventId,
 						timestamp: command.at,
 						type: "config",
@@ -1314,7 +1271,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 									? "Global injection and automatic Global learning enabled."
 									: "Automatic learning constrained to Project scope; Global injection disabled."
 								: `Global setting changed to ${enabled ? "on" : "off"}; it remains inactive while Taste is off.`
-						}\nProject config: ${projectConfigPath(stores.projectPaths)}`,
+						}\nProject taste.md: ${stores.projectPaths.taste}`,
 					});
 					ctx.ui.notify(
 						config.learningEnabled
@@ -1327,7 +1284,6 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					return;
 				}
 
-
 				if (subcommand === "curate") {
 					const action = ["show", "apply", "discard", "rebuild"].includes(restParts[0] ?? "")
 						? restParts[0]
@@ -1335,9 +1291,9 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					if (action === "plan" || action === "apply") await queue;
 					const stores = await preferenceStores(ctx.cwd);
 					if (action === "rebuild") {
-						await regenerateTaste(stores.globalPaths);
-						if (stores.projectPaths) await regenerateTaste(stores.projectPaths);
-						ctx.ui.notify("Taste Markdown views regenerated from authoritative preferences.json. No model was called.", "info");
+						await savePreferencesUnlocked(stores.globalPaths, stores.global);
+						if (stores.projectPaths) await savePreferencesUnlocked(stores.projectPaths, stores.project);
+						ctx.ui.notify("Taste Markdown views regenerated from the single-source taste.md. No model was called.", "info");
 						return;
 					}
 					if (action === "show") {
@@ -1372,7 +1328,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 						const applied = await applyCurationPlan(plan, stores.globalPaths, stores.projectPaths);
 						const command = commandContext(ctx);
 						const event: TasteEvent = {
-							version: 1,
+							version: 2,
 							id: command.eventId,
 							timestamp: command.at,
 							type: "curate",
@@ -1385,10 +1341,6 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 						const changedScopes = Array.from(
 							new Set(
 								plan.operations.flatMap((operation) => [
-									...operation.sourceIds.flatMap((id) => {
-										const scope = beforeById.get(id)?.scope;
-										return scope ? [scope] : [];
-									}),
 									...(operation.targetScope ? [operation.targetScope] : []),
 								]),
 							),
@@ -1398,7 +1350,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 							statement: operation.statement
 								? `${operation.type}: ${operation.statement}`
 								: `${operation.type}: ${operation.sourceIds.join(", ")}${operation.winnerId ? ` → ${operation.winnerId}` : operation.targetScope ? ` → ${operation.targetScope}` : ""}`,
-							scope: operation.targetScope ?? beforeById.get(operation.sourceIds[0])?.scope,
+							...(operation.targetScope ? { scope: operation.targetScope } : {}),
 							reason: operation.reason,
 						}));
 						safeAppendTasteActivity(pi, {

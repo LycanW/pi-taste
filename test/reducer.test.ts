@@ -1,138 +1,209 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { test } from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
-import { movePreference, reduceObserverResult, rememberPreferences } from "../reducer.ts";
-import { loadPreferenceFile } from "../storage.ts";
-import type { ObserverResult, StorePaths, TasteScope } from "../types.ts";
+import {
+	rememberPreference,
+	reduceLearnerResult,
+} from "../reducer.ts";
+import { loadPreferences, normalizePreferenceKey, preferenceId } from "../storage.ts";
+import type { Preference, StorePaths } from "../types.ts";
 
-function store(root: string, scope: TasteScope): StorePaths {
-	const dir = join(root, scope);
-	return {
+async function tempStore(scope: "global" | "project"): Promise<{ paths: StorePaths; dir: string }> {
+	const dir = await mkdtemp(join(tmpdir(), "pi-taste-reducer-"));
+	const paths: StorePaths = {
 		dir,
-		preferences: join(dir, "preferences.json"),
 		taste: join(dir, "taste.md"),
-		events: join(dir, "events.jsonl"),
+		auditDir: join(dir, "audit"),
+		audit: join(dir, "audit", "current.jsonl"),
 		lock: join(dir, ".lock"),
 		scope,
-		...(scope === "project" ? { projectRoot: root } : {}),
 	};
+	return { paths, dir };
 }
 
-test("manual batch remember is approved, deduplicated, and rendered", async () => {
-	const root = await mkdtemp(join(tmpdir(), "pi-taste-reducer-"));
+test("preferenceId is deterministic and scope-scoped", () => {
+	assert.equal(preferenceId("Use tabs", "project"), preferenceId("Use tabs", "project"));
+	assert.notEqual(preferenceId("Use tabs", "project"), preferenceId("Use tabs", "global"));
+});
+
+test("explicit durable learning is approved", async () => {
+	const { paths, dir } = await tempStore("project");
 	try {
-		const paths = store(root, "global");
-		const context = { eventId: "event-1", at: "2026-01-01T00:00:00.000Z" };
-		const first = await rememberPreferences(paths, ["Always show exact file paths."], context);
-		const second = await rememberPreferences(paths, ["Always show exact file paths."], {
-			eventId: "event-2",
-			at: "2026-01-02T00:00:00.000Z",
-		});
-		assert.equal(first[0].action, "added");
-		assert.equal(second[0].action, "reinforced");
-		const file = await loadPreferenceFile(paths);
-		assert.equal(file.preferences.length, 1);
-		assert.equal(file.preferences[0].status, "approved");
-		assert.equal(file.preferences[0].supportCount, 2);
-		assert.match(await readFile(paths.taste, "utf8"), /Always show exact file paths\./);
+		const result = await reduceLearnerResult(
+			{
+				learnings: [
+					{
+						statement: "Always use tabs instead of spaces.",
+						scope: "project",
+						confidence: 0.9,
+						explicit: true,
+						quote: "always use tabs",
+					},
+				],
+			},
+			{
+				eventId: "e1",
+				at: "2026-01-01T00:00:00Z",
+				userFeedback: "Always use tabs instead of spaces.",
+				allowGlobalLearning: true,
+			},
+			paths,
+		);
+		assert.ok(result.changes.some((change) => change.action === "added"));
+		const preferences = await loadPreferences(paths);
+		assert.equal(preferences.length, 1);
+		assert.equal(preferences[0].status, "approved");
+		assert.equal(preferences[0].confidence, 0.9);
 	} finally {
-		await rm(root, { recursive: true, force: true });
+		await rm(dir, { recursive: true, force: true });
 	}
 });
 
-test("automatic Global scope requires both an enabled switch and explicit global evidence", async () => {
-	const root = await mkdtemp(join(tmpdir(), "pi-taste-auto-scope-"));
+test("implicit correction is pending until approved or repeated", async () => {
+	const { paths, dir } = await tempStore("project");
 	try {
-		const globalPaths = store(root, "global");
-		const projectPaths = store(root, "project");
-		const result = (quote: string): ObserverResult => ({
-			classification: { kind: "explicit_preference", reason: "explicit durable preference" },
-			proposals: [
-				{
-					statement: "Always show exact file paths.",
-					scope: "global",
-					signal: "explicit_preference",
-					persistence: "durable",
-					quote,
-					relation: { type: "new", preferenceId: null },
-				},
-			],
-		});
-
-		const disabled = await reduceObserverResult(
-			result("所有项目以后都必须显示准确文件路径"),
+		const result = await reduceLearnerResult(
 			{
-				eventId: "event-disabled",
-				at: "2026-01-01T00:00:00.000Z",
-				userFeedback: "所有项目以后都必须显示准确文件路径",
-				allowGlobalLearning: false,
+				learnings: [
+					{
+						statement: "Prefers diagrams before implementation.",
+						scope: "project",
+						confidence: 0.4,
+						explicit: false,
+						quote: "先画图",
+					},
+				],
 			},
-			globalPaths,
-			projectPaths,
-		);
-		assert.equal(disabled.changes[0].scope, "project");
-		assert.match(disabled.changes[0].reason ?? "", /Global learning is off/);
-		assert.equal((await loadPreferenceFile(globalPaths)).preferences.length, 0);
-		assert.equal((await loadPreferenceFile(projectPaths)).preferences.length, 1);
-
-		await rm(projectPaths.dir, { recursive: true, force: true });
-		const ambiguous = await reduceObserverResult(
-			result("以后必须显示准确文件路径"),
 			{
-				eventId: "event-ambiguous",
-				at: "2026-01-02T00:00:00.000Z",
-				userFeedback: "以后必须显示准确文件路径",
+				eventId: "e1",
+				at: "2026-01-01T00:00:00Z",
+				userFeedback: "下次先画图再写代码",
 				allowGlobalLearning: true,
 			},
-			globalPaths,
-			projectPaths,
+			paths,
 		);
-		assert.equal(ambiguous.changes[0].scope, "project");
-		assert.match(ambiguous.changes[0].reason ?? "", /not explicit/);
-		assert.equal((await loadPreferenceFile(globalPaths)).preferences.length, 0);
-
-		await rm(projectPaths.dir, { recursive: true, force: true });
-		const enabled = await reduceObserverResult(
-			result("所有项目以后都必须显示准确文件路径"),
-			{
-				eventId: "event-enabled",
-				at: "2026-01-03T00:00:00.000Z",
-				userFeedback: "所有项目以后都必须显示准确文件路径",
-				allowGlobalLearning: true,
-			},
-			globalPaths,
-			projectPaths,
-		);
-		assert.equal(enabled.changes[0].scope, "global");
-		assert.equal((await loadPreferenceFile(globalPaths)).preferences.length, 1);
-		assert.equal((await loadPreferenceFile(projectPaths)).preferences.length, 0);
+		assert.ok(result.changes.some((change) => change.status === "pending"));
+		const preferences = await loadPreferences(paths);
+		assert.equal(preferences[0].status, "pending");
 	} finally {
-		await rm(root, { recursive: true, force: true });
+		await rm(dir, { recursive: true, force: true });
 	}
 });
 
-test("moving scope supersedes the source and preserves an approved target", async () => {
-	const root = await mkdtemp(join(tmpdir(), "pi-taste-move-"));
+test("duplicate statement is reinforced, not duplicated", async () => {
+	const { paths, dir } = await tempStore("project");
 	try {
-		const globalPaths = store(root, "global");
-		const projectPaths = store(root, "project");
-		const [remembered] = await rememberPreferences(globalPaths, ["Keep explanations concise."], {
-			eventId: "event-1",
-			at: "2026-01-01T00:00:00.000Z",
-		});
-		const moved = await movePreference(globalPaths, projectPaths, remembered.preference.id, {
-			eventId: "event-2",
-			at: "2026-01-02T00:00:00.000Z",
-		});
-		assert.equal(moved.source.status, "superseded");
-		assert.equal(moved.target.status, "approved");
-		assert.equal(moved.target.scope, "project");
-		assert.ok(moved.target.supersedes.includes(moved.source.id));
-		assert.doesNotMatch(await readFile(globalPaths.taste, "utf8"), /Keep explanations concise\./);
-		assert.match(await readFile(projectPaths.taste, "utf8"), /Keep explanations concise\./);
+		await reduceLearnerResult(
+			{
+				learnings: [
+					{ statement: "Never create worktrees.", scope: "project", confidence: 0.9, explicit: true },
+				],
+			},
+			{ eventId: "e1", at: "2026-01-01T00:00:00Z", userFeedback: "never create worktrees", allowGlobalLearning: true },
+			paths,
+		);
+		const result = await reduceLearnerResult(
+			{
+				learnings: [
+					{ statement: "Never create worktrees.", scope: "project", confidence: 0.95, explicit: true },
+				],
+			},
+			{ eventId: "e2", at: "2026-01-02T00:00:00Z", userFeedback: "never create worktrees", allowGlobalLearning: true },
+			paths,
+		);
+		assert.equal(result.changes[0].action, "reinforced");
+		const preferences = await loadPreferences(paths);
+		assert.equal(preferences.length, 1);
+		assert.equal(preferences[0].confidence, 0.95);
 	} finally {
-		await rm(root, { recursive: true, force: true });
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("quote not present in feedback is rejected", async () => {
+	const { paths, dir } = await tempStore("project");
+	try {
+		const result = await reduceLearnerResult(
+			{
+				learnings: [
+					{
+						statement: "Use pnpm.",
+						scope: "project",
+						confidence: 0.8,
+						explicit: true,
+						quote: "use yarn",
+					},
+				],
+			},
+			{ eventId: "e1", at: "2026-01-01T00:00:00Z", userFeedback: "Use pnpm.", allowGlobalLearning: true },
+			paths,
+		);
+		assert.equal(result.changes.length, 0);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("global learning constrained when allowGlobalLearning=false", async () => {
+	const { paths, dir } = await tempStore("global");
+	try {
+		// Global paths with global learning disabled: proposal must lose global scope
+		const result = await reduceLearnerResult(
+			{
+				learnings: [
+					{ statement: "All projects use tabs.", scope: "global", confidence: 0.9, explicit: true },
+				],
+			},
+			{ eventId: "e1", at: "2026-01-01T00:00:00Z", userFeedback: "all projects use tabs", allowGlobalLearning: false },
+			paths,
+		);
+		// Only global paths are writable here; the proposal is constrained to project,
+		// and project is unavailable, so no change.
+		assert.equal(result.changes.length, 0);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("manual remember marks approved with confidence 1", async () => {
+	const { paths, dir } = await tempStore("project");
+	try {
+		const outcome = await rememberPreference(
+			paths,
+			"Always document public APIs.",
+			{ eventId: "l1", at: "2026-01-01T00:00:00Z" },
+		);
+		assert.equal(outcome.action, "added");
+		assert.equal(outcome.preference.status, "approved");
+		assert.equal(outcome.preference.confidence, 1);
+		const preferences = await loadPreferences(paths);
+		assert.equal(preferences.length, 1);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("manual remember of existing statement reinforces", async () => {
+	const { paths, dir } = await tempStore("project");
+	try {
+		await reduceLearnerResult(
+			{ learnings: [{ statement: "Use tabs.", scope: "project", confidence: 0.5, explicit: false }] },
+			{ eventId: "e1", at: "2026-01-01T00:00:00Z", userFeedback: "use tabs", allowGlobalLearning: true },
+			paths,
+		);
+		const outcome = await rememberPreference(
+			paths,
+			"Use tabs.",
+			{ eventId: "l1", at: "2026-01-02T00:00:00Z" },
+		);
+		assert.equal(outcome.action, "reinforced");
+		const preferences = await loadPreferences(paths);
+		assert.equal(preferences[0].status, "approved");
+		await rm(dir, { recursive: true, force: true });
+	} catch (error) {
+		await rm(dir, { recursive: true, force: true });
+		throw error;
 	}
 });

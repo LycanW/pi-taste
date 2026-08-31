@@ -2,6 +2,20 @@
 
 All notable changes to Pi Taste are documented here.
 
+## 0.4.0 - 2026-08-31
+
+### v2 architecture (reverse-engineered from Command Code)
+
+- Replace the classified Observer with a semantic **Learner**: the model decides whether a durable, generalizable preference was revealed (no `task_constraint`/`correctness_fix`/`acknowledgement` buckets).
+- Remove vocabulary gates (`hasDurableMarker`, `hasTurnOnlyMarker`, `isLowSignalFeedback`): the model sees full visible conversation and reasons semantically.
+- Learner context now contains only visible user/assistant text (plus session summary); thinking, tool calls, tool results, and technical metadata are excluded.
+- `taste.md` is now the **single authoritative state**, formatted like Command Code (`- statement. Confidence: 0-n` with `[pending]`/`[rejected]`/`[superseded]` markers); `preferences.json`/`events.jsonl` are gone (history lives in Pi session JSONL).
+- Project `includeGlobalTaste` moved into `taste.md` frontmatter (no project `config.json`).
+- Confidence is model-maintained (0-1), like Command Code, instead of code-computed.
+- Audit log is bounded: `audit/current.jsonl` rotates into `segment-*.jsonl` with segment/total-byte caps.
+- Keep approved-only injection, least-scope classification, manual global overrides, post-settle Learner, single concurrency, retry, Curator, footer, and activity cards.
+- Reducer retains only mechanical safety: quote verification, dedupe, state machine, path containment, atomicity, locking, redaction.
+
 ## 0.3.2 - 2026-08-31
 
 - Add `/taste retry [event-id]` for explicit, project-local replay of failed Observer events.

@@ -9,9 +9,9 @@ import type { StorePaths, TasteEvent } from "../types.ts";
 function globalStore(root: string): StorePaths {
 	return {
 		dir: join(root, "global"),
-		preferences: join(root, "global", "preferences.json"),
 		taste: join(root, "global", "taste.md"),
-		events: join(root, "global", "events.jsonl"),
+		auditDir: join(root, "global", "audit"),
+		audit: join(root, "global", "audit", "current.jsonl"),
 		lock: join(root, "global", ".lock"),
 		scope: "global",
 	};
@@ -19,12 +19,12 @@ function globalStore(root: string): StorePaths {
 
 function failedEvent(id: string, projectRoot: string): TasteEvent {
 	return {
-		version: 1,
+		version: 2,
 		id,
 		timestamp: "2026-01-01T00:00:00.000Z",
 		type: "observer",
 		projectRoot,
-		interaction: { currentUserFeedback: "以后始终显示准确路径" },
+		interaction: { userText: "以后始终显示准确路径", assistantText: "" },
 		observer: { status: "failed", reason: "server overloaded" },
 	};
 }
@@ -47,16 +47,16 @@ test("manual retry lookup stays project-local and ignores successfully retried f
 		assert.equal(fromAttemptId.event?.id, "failed-root");
 
 		await appendEvent(paths, {
-			version: 1,
+			version: 2,
 			id: "retry-success",
 			timestamp: "2026-01-02T00:00:00.000Z",
 			type: "observer",
 			projectRoot,
 			details: { retryOf: "failed-root" },
-			interaction: { currentUserFeedback: "以后始终显示准确路径" },
+			interaction: { userText: "以后始终显示准确路径", assistantText: "" },
 			observer: {
 				status: "completed",
-				result: { classification: { kind: "explicit_preference", reason: "explicit" }, proposals: [] },
+				result: { learnings: [] },
 			},
 		});
 

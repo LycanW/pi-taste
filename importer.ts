@@ -26,6 +26,7 @@ function cleanImportedStatement(input: string): string {
 		.trim()
 		.replace(/^[-*]\s+/, "")
 		.replace(/\s+Confidence:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\s*\.?\s*$/i, "")
+		.replace(/\s+\[(?:approved|pending|rejected|superseded)\]\s*$/i, "")
 		.replace(/\s+/g, " ")
 		.trim();
 }

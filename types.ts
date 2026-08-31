@@ -1,37 +1,21 @@
 export type TasteScope = "global" | "project";
-export type PreferenceStatus = "approved" | "pending" | "rejected" | "superseded";
-export type EvidenceSignal = "explicit_preference" | "implicit_correction" | "manual" | "review";
 
-export interface PreferenceEvidence {
-	eventId: string;
-	at: string;
-	quote: string;
-	signal: EvidenceSignal;
-	sessionId?: string;
-}
-
+/**
+ * A single learned preference line in taste.md.
+ * v2: taste.md is the single authoritative file. History and evidence live in
+ * Pi session JSONL; this struct is only the current effective conclusion plus
+ * the minimal operational state needed for safe injection.
+ */
 export interface Preference {
 	id: string;
 	statement: string;
-	key: string;
 	scope: TasteScope;
-	status: PreferenceStatus;
-	source: "observer" | "manual";
-	createdAt: string;
-	updatedAt: string;
-	evidence: PreferenceEvidence[];
-	supportCount: number;
-	contradictionCount: number;
-	reviewed: boolean;
+	/** approved = injected; pending = awaiting review; rejected/superseded = excluded. */
+	status: "approved" | "pending" | "rejected" | "superseded";
+	/** Model-maintained 0..1 like Command Code's "Confidence: 0.9". */
 	confidence: number;
-	conflictsWith: string[];
-	supersedes: string[];
-}
-
-export interface PreferenceFile {
-	version: 1;
-	updatedAt: string;
-	preferences: Preference[];
+	/** Optional short exact user excerpt that justified this line (best effort). */
+	quote?: string;
 }
 
 export interface ObserverModelRef {
@@ -39,13 +23,8 @@ export interface ObserverModelRef {
 	model: string;
 }
 
-export interface ProjectTasteConfig {
-	version: 1;
-	includeGlobalTaste: boolean;
-}
-
 export interface TasteConfig {
-	version: 1;
+	version: 2;
 	learningEnabled: boolean;
 	observer: {
 		modelMode: "inherit" | "custom";
@@ -56,56 +35,37 @@ export interface TasteConfig {
 		maxInputChars: number;
 	};
 	injection: {
-		includeCommandCode: boolean;
 		maxPreferences: number;
 		maxChars: number;
 	};
 }
 
-export type FeedbackKind =
-	| "explicit_preference"
-	| "implicit_correction"
-	| "task_constraint"
-	| "correctness_fix"
-	| "acknowledgement"
-	| "unrelated_request"
-	| "none";
-
-export interface ObserverProposal {
+/** v2 Learner result — semantic, self-determined; no classification buckets. */
+export interface LearnerProposal {
 	statement: string;
 	scope: TasteScope;
-	signal: "explicit_preference" | "implicit_correction";
-	persistence: "durable" | "uncertain" | "turn_only";
-	quote: string;
-	relation: {
-		type: "new" | "supports" | "contradicts" | "refines";
-		preferenceId: string | null;
-	};
+	confidence: number;
+	/** true = explicitly stated by the user; false = inferred from behavior/correction. */
+	explicit: boolean;
+	quote?: string;
 }
 
-export interface ObserverResult {
-	classification: {
-		kind: FeedbackKind;
-		reason: string;
-	};
-	proposals: ObserverProposal[];
+export interface LearnerResult {
+	/** "no changes" when nothing durable; otherwise list of learnings. */
+	learnings: LearnerProposal[];
 }
 
-export interface AgentOutcome {
-	at: string;
+/** Visible conversational context for the Learner: user/assistant text only. */
+export interface InteractionContext {
+	userText: string;
 	assistantText: string;
-	toolSummary: Array<{
-		name: string;
-		path?: string;
-		isError?: boolean;
-	}>;
-	changedFiles: string[];
+	summary?: string;
 }
 
 export interface ReductionChange {
 	preferenceId?: string;
 	action: "added" | "reinforced" | "approved" | "rejected" | "superseded" | "skipped";
-	status?: PreferenceStatus;
+	status?: Preference["status"];
 	reason?: string;
 	statement?: string;
 	scope?: TasteScope;
@@ -124,19 +84,19 @@ export interface ObserverUsage {
 }
 
 export interface TasteEvent {
-	version: 1;
+	version: 2;
 	id: string;
 	timestamp: string;
 	type: "observer" | "manual" | "import" | "move" | "review" | "forget" | "config" | "curate";
 	sessionId?: string;
 	projectRoot?: string;
 	interaction?: {
-		previousAgentOutcome?: AgentOutcome;
-		currentUserFeedback: string;
+		userText: string;
+		assistantText: string;
 	};
 	observer?: {
 		status: "completed" | "skipped" | "failed";
-		result?: ObserverResult;
+		result?: LearnerResult;
 		usage?: ObserverUsage;
 		reason?: string;
 	};
@@ -157,7 +117,7 @@ export interface CurationOperation {
 }
 
 export interface CurationPlan {
-	version: 1;
+	version: 2;
 	id: string;
 	createdAt: string;
 	projectRoot?: string;
@@ -170,9 +130,9 @@ export interface CurationPlan {
 
 export interface StorePaths {
 	dir: string;
-	preferences: string;
 	taste: string;
-	events: string;
+	auditDir: string;
+	audit: string;
 	lock: string;
 	scope: TasteScope;
 	projectRoot?: string;

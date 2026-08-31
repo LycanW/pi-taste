@@ -62,18 +62,14 @@ test("non-Git workspaces default to Global injection and learning and can disabl
 		assert.match(offStatus, /Taste: off \(automatic learning \+ injection disabled\)/);
 		assert.match(offStatus, /Global Taste in this project: off \(inactive while Taste is off\)/);
 		assert.match(offStatus, /Injection snapshot: off \(0 entries, 0 bytes\)/);
-		const removedCommandNotes = await command("/taste inject off");
-		assert.ok(removedCommandNotes.some((note) => note.includes("Unknown Taste command: inject")));
 		await command("/taste on");
 		const [restoredStatus] = await command("/taste status");
 		assert.match(restoredStatus, /Taste: on \(automatic learning \+ injection\)/);
 		assert.match(restoredStatus, /Injection snapshot: \S+ \(1 entries,/);
-		const globalConfig = JSON.parse(await readFile(join(globalStore, "config.json"), "utf8"));
-		assert.equal("injectionEnabled" in globalConfig, false);
 		const projectRoot = join(workspace, ".pi", "taste");
-		const config = JSON.parse(await readFile(join(projectRoot, "config.json"), "utf8"));
-		assert.deepEqual(config, { version: 1, includeGlobalTaste: false });
-		assert.match(await readFile(join(projectRoot, "taste.md"), "utf8"), /Keep this workspace project-only\./);
+		const projectTaste = await readFile(join(projectRoot, "taste.md"), "utf8");
+		assert.match(projectTaste, /Keep this workspace project-only\./);
+		assert.match(projectTaste, /includeGlobalTaste: false/);
 	} finally {
 		child.stdin.end();
 		const exitCode = await new Promise<number | null>((resolveExit) => child.once("exit", resolveExit));

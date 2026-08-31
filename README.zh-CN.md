@@ -13,13 +13,13 @@ Pi Taste 是受 Command Code 用户侧 Taste 工作流启发的独立开源实�
 直接从 GitHub 安装 Pi package：
 
 ```bash
-pi install git:github.com/LycanW/pi-taste@v0.3.2
+pi install git:github.com/LycanW/pi-taste@v0.4.0
 ```
 
 无需永久安装即可试用一次：
 
 ```bash
-pi -e git:github.com/LycanW/pi-taste@v0.3.2
+pi -e git:github.com/LycanW/pi-taste@v0.4.0
 ```
 
 当前版本已使用 Pi 0.84.4 验证，并要求 Node.js 22.19 或更高版本，与 Pi 自身的运行时要求一致。
@@ -58,23 +58,23 @@ pi -e git:github.com/LycanW/pi-taste@v0.3.2
 当 `/taste on` 开启时，普通用户轮次会执行以下流程：
 
 ```text
-上一轮 Agent 行为 + 当前用户反馈
+用户可见消息 + Assistant 可见文本
     → 当前前台 Agent 完全结束
-    → 后台 Observer
+    → 后台 Learner（语义判断，无分类桶）
     → 确定性校验与 Reducer
-    → approved / pending / rejected / superseded 状态
+    → approved / pending / rejected / superseded 状态（写入 taste.md）
     → 在未来轮次中仅注入 approved Taste
 ```
 
-当前用户消息才是偏好证据。上一轮 Agent 回复、工具调用和修改文件仅作为“被评价的行为”，不能单独产生用户偏好。
+当前用户消息才是偏好证据。Assistant 可见文本仅用于解析引用，不能单独产生偏好。thinking、工具调用、工具结果和技术元数据不会进入 Learner 上下文。
 
 用户在 Agent 流式工作期间插入的 steering 和 follow-up 消息也会被捕获。Taste 会快照插入发生时已经可见的 Assistant 文本、工具调用和已完成工具结果；等完整前台运行结束后，再用这段进行中行为与插入纠正进行评价。扩展自行生成的消息会被排除，因为它们不是用户证据。
 
-扩展会先为当前轮生成注入快照，再暂存当前反馈。Taste 会等待 Pi 确认完整的前台 Agent 运行（包括重试和排队的 follow-up）已经结束，然后在后台启动 Observer。后续用户轮次不需要等待，也不会取消已经运行的 Observer。因此，新学到的偏好只能影响后续轮次，不会反过来影响提供该证据的当前轮次。
+扩展会先为当前轮生成注入快照，再暂存当前反馈。Taste 会等待 Pi 确认完整的前台 Agent 运行（包括重试和排队的 follow-up）已经结束，然后在后台启动 Learner。后续用户轮次不需要等待，也不会取消已经运行的 Learner。因此，新学到的偏好只能影响后续轮次，不会反过来影响提供该证据的当前轮次。
 
 使用 `--no-session` 启动的 Pi 进程，以及带有 `PI_SUBAGENT_CHILD=1` 标记的 `pi-subagents` 子进程，可以接收 approved Taste 注入，但不会产生学习事件。`PI_TASTE_ALLOW_NO_SESSION=1` 仅供隔离测试使用，并且不能绕过 subagent 子进程保护。
 
-自动 Scope 归类遵循最小作用域：默认使用 Project。只有当前反馈明确表达“跨项目/全局个人偏好”，并且当前项目已执行 `/taste global on` 时，才允许归入 Global。`/taste global off` 时，Observer 只查看 Project 偏好，Reducer 还会确定性地把所有新的自动提案限制为 Project。`remember -g`、`import -g` 和 `move ... global` 等显式管理命令仍属于人工覆盖。
+自动 Scope 归类遵循最小作用域：默认使用 Project。只有当前反馈明确表达“跨项目/全局个人偏好”，并且当前项目已执行 `/taste global on` 时，才允许归入 Global。`/taste global off` 时，Learner 只查看 Project 偏好，Reducer 还会确定性地把所有新的自动提案限制为 Project。`remember -g`、`import -g` 和 `move ... global` 等显式管理命令仍属于人工覆盖。
 
 ## 3. 对话区活动卡片
 
@@ -367,10 +367,11 @@ Global 状态：
 ```text
 ~/.pi/agent/taste/
 ├── config.json        # 扩展配置
-├── events.jsonl       # 仅追加的反馈与审计事件
-├── preferences.json   # 权威偏好状态
+├── taste.md           # 单一权威偏好状态
 ├── curation.json      # 最近一次 Curator 计划（存在时）
-└── taste.md           # 自动生成、仅含 approved 的可读视图
+└── audit/
+    ├── current.jsonl  # 仅追加审计事件
+    └── segment-*.jsonl # 轮换后的审计分段（有界）
 ```
 
 Taste 为该工作区加载时，会在解析出的项目根目录下初始化 Project 状态。存在 Git 根目录时使用最近的 Git 根目录，否则使用 Pi 当前工作目录：
@@ -378,21 +379,19 @@ Taste 为该工作区加载时，会在解析出的项目根目录下初始化 P
 ```text
 <project-root>/.pi/taste/
 ├── .gitignore         # 防止意外公开私有状态
-├── config.json        # 项目专属开关；Global Taste 默认开启
-├── events.jsonl
-├── preferences.json
-└── taste.md
+├── taste.md           # 单一权威偏好状态 + frontmatter
+└── audit/             # 有界仅追加审计记录
 ```
 
 各文件职责：
 
-- `preferences.json` 是权威状态；
-- `taste.md` 是自动生成的 approved-only 视图，也是活动卡片显示的 Taste 路径；
-- `events.jsonl` 是仅追加审计记录；
-- 项目 `config.json` 同时控制 Global 注入，以及当前项目的自动学习能否归入 Global；
-- 不支持通过直接编辑生成的 `taste.md` 来管理状态。
+- `taste.md` 是**单一权威状态**。每行格式为 `- statement. Confidence: 0-1`；`[pending]`/`[rejected]`/`[superseded]` 标记会排除注入；
+- 项目 `taste.md` frontmatter 承载 `includeGlobalTaste: true|false`（项目 Global 开关）；
+- `audit/current.jsonl` 是仅追加审计记录，达到大小/行数阈值时会轮换为 `segment-*.jsonl`，并设有分段总数和总字节硬上限；
+- 旧版本的 `preferences.json` 和 `events.jsonl` 不再使用；历史由 Pi session JSONL 承载；
+- 直接编辑 `taste.md` 是可行的（它是人类可读的），但 `/taste` 命令或 `/taste curate` 是受支持的状态管理方式。
 
-写入过程使用原子替换和跨进程文件锁。在平台支持时，存储文件会使用私有权限创建。
+写入过程使用原子替换和跨进程文件锁。在平台支持时，存储文件会使用私有权限创建。审计事件在持久化前会脱敏密钥和令牌。
 
 ## 13. Command Code 兼容性
 
@@ -423,22 +422,20 @@ Pi Taste 会规范化这些条目，并与 Pi 偏好去重。它永远不会修�
     "maxInputChars": 24000
   },
   "injection": {
-    "includeCommandCode": true,
     "maxPreferences": 80,
     "maxChars": 16000
   }
 }
 ```
 
-为兼容旧配置，持久化总开关字段继续命名为 `learningEnabled`；它现在同时控制自动学习和注入。旧的 `injectionEnabled` 值会被忽略，并在下次保存配置时移除。
+`learningEnabled` 是持久化总开关字段；它同时控制自动学习和注入。
 
-默认 `<project-root>/.pi/taste/config.json`：
+默认 `<project-root>/.pi/taste/taste.md` frontmatter：
 
-```json
-{
-  "version": 1,
-  "includeGlobalTaste": true
-}
+```text
+---
+includeGlobalTaste: true
+---
 ```
 
 请使用 `/taste global on|off`，而不是手工编辑该文件。
@@ -447,8 +444,8 @@ Pi Taste 会规范化这些条目，并与 Pi 偏好去重。它永远不会修�
 
 ## 15. 隐私与安全
 
-- 在交互摘录发送给 Observer 或写入审计事件前，会对常见 Token 和密钥模式进行脱敏。
-- 用户消息和 Agent outcome 都有长度限制。
+- 在交互摘录发送给 Learner 或写入审计事件前，会对常见 Token 和密钥模式进行脱敏。
+- 用户消息和 Assistant 文本都有长度限制。
 - 脱敏属于纵深防御，不是完整的秘密扫描器。
 - `events.jsonl` 仍可能包含敏感反馈或代码片段，应当视为私有文件。
 - 活动卡片包含偏好文本和绝对文件路径，但不会发送给模型。

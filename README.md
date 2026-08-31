@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Pi Taste is a local, reviewable preference-learning extension for the [Pi coding agent](https://github.com/earendil-works/pi-mono). It observes the previous Agent outcome together with the next user message, extracts evidence-backed durable preferences, applies them through deterministic code, and injects only approved preferences into future turns.
+Pi Taste is a local, reviewable preference-learning extension for the [Pi coding agent](https://github.com/earendil-works/pi-mono). It feeds visible conversation (your words plus the assistant's visible text) to a **Learner** model that decides semantically whether a durable preference was revealed; deterministic code then writes only approved preferences to a single-source `taste.md`, which is injected into future turns.
 
 It does **not** train or modify model weights. The learned state remains readable, auditable, and removable on your filesystem.
 
@@ -13,13 +13,13 @@ Pi Taste is an independent open-source implementation inspired by the user-facin
 Install the Pi package directly from GitHub:
 
 ```bash
-pi install git:github.com/LycanW/pi-taste@v0.3.2
+pi install git:github.com/LycanW/pi-taste@v0.4.0
 ```
 
 Try it for one run without installing:
 
 ```bash
-pi -e git:github.com/LycanW/pi-taste@v0.3.2
+pi -e git:github.com/LycanW/pi-taste@v0.4.0
 ```
 
 This release is tested with Pi 0.84.4 and requires Node.js 22.19 or newer, matching Pi's runtime requirement.
@@ -58,23 +58,23 @@ Useful first commands:
 When `/taste on` is active, an ordinary user turn follows this pipeline:
 
 ```text
-previous Agent behavior + current user feedback
+your visible message + assistant's visible text
     → current foreground Agent fully settles
-    → background Observer
+    → background Learner (semantic judgment, no classification buckets)
     → deterministic validation and reduction
-    → approved / pending / rejected / superseded state
+    → approved / pending / rejected / superseded state in taste.md
     → approved-only injection on a future turn
 ```
 
-The current user message is the preference evidence. The previous Agent response, tool calls, and changed files are included only as the behavior being evaluated; they cannot independently create a preference.
+The current user message is the only preference evidence. The assistant's visible text is provided so the Learner can resolve references, but it cannot independently create a preference. Thinking, tool calls, tool results, and technical metadata are excluded from the Learner context.
 
-User steering and follow-up messages inserted while the Agent is streaming are also captured. Taste snapshots the Assistant text, tool calls, and completed tool results visible at the insertion point, then evaluates that in-progress behavior against the inserted correction after the complete foreground run settles. Extension-generated messages are excluded because they are not user evidence.
+User steering and follow-up messages inserted while the Agent is streaming are also captured. Taste snapshots the Assistant text visible at the insertion point, then evaluates that in-progress behavior against the inserted correction after the complete foreground run settles. Extension-generated messages are excluded because they are not user evidence.
 
-The injection snapshot is created before the current feedback is held for learning. Taste waits until Pi reports that the complete foreground Agent run—including retries and queued follow-ups—has settled, then starts the Observer in the background. A later user turn does not wait for or cancel an Observer that is already running. Therefore, a newly learned preference can affect only a later turn, never the same turn that supplied its evidence.
+The injection snapshot is created before the current feedback is held for learning. Taste waits until Pi reports that the complete foreground Agent run—including retries and queued follow-ups—has settled, then starts the Learner in the background. A later user turn does not wait for or cancel a Learner that is already running. Therefore, a newly learned preference can affect only a later turn, never the same turn that supplied its evidence.
 
 Pi processes launched with `--no-session`, and `pi-subagents` children marked by `PI_SUBAGENT_CHILD=1`, receive approved Taste injection but do not generate learning events. `PI_TASTE_ALLOW_NO_SESSION=1` is intended only for isolated testing and never overrides the subagent-child guard.
 
-Automatic scope assignment follows least privilege. Project is the default. Global is allowed only when the current feedback explicitly describes a cross-project/global personal preference and `/taste global on` is active for the current project. With `/taste global off`, the Observer sees only Project preferences and the Reducer deterministically constrains every new automatic proposal to Project scope. Explicit management commands such as `remember -g`, `import -g`, and `move ... global` remain manual overrides.
+Automatic scope assignment follows least privilege. Project is the default. Global is allowed only when the current feedback explicitly describes a cross-project/global personal preference and `/taste global on` is active for the current project. With `/taste global off`, the Learner sees only Project preferences and the Reducer deterministically constrains every new automatic proposal to Project scope. Explicit management commands such as `remember -g`, `import -g`, and `move ... global` remain manual overrides.
 
 ## 3. Conversation activity cards
 
@@ -367,10 +367,11 @@ Global state:
 ```text
 ~/.pi/agent/taste/
 ├── config.json        # extension configuration
-├── events.jsonl       # append-only feedback and audit events
-├── preferences.json   # authoritative preference state
+├── taste.md           # single authoritative preference state
 ├── curation.json      # latest Curator plan, when present
-└── taste.md           # generated approved-only human-readable view
+└── audit/
+    ├── current.jsonl  # append-only audit events
+    └── segment-*.jsonl # rotated audit segments (bounded)
 ```
 
 Project state is initialized under the resolved project root when Taste loads for that workspace. The root is the nearest Git root when available, otherwise Pi's working directory:
@@ -378,21 +379,19 @@ Project state is initialized under the resolved project root when Taste loads fo
 ```text
 <project-root>/.pi/taste/
 ├── .gitignore         # prevents accidental publication of private state
-├── config.json        # per-project switch; Global Taste defaults on
-├── events.jsonl
-├── preferences.json
-└── taste.md
+├── taste.md           # single authoritative preference state + frontmatter
+└── audit/             # bounded append-only audit trail
 ```
 
 File roles:
 
-- `preferences.json` is authoritative;
-- `taste.md` is a generated approved-only view and the path shown in activity cards;
-- `events.jsonl` is the append-only audit trail;
-- project `config.json` controls both Global injection and whether automatic learning may target Global scope from this project;
-- editing generated `taste.md` directly is not the supported way to manage state.
+- `taste.md` is the **single authoritative state**. Each line is `- statement. Confidence: 0-1`; `[pending]`/`[rejected]`/`[superseded]` markers exclude entries from injection;
+- project `taste.md` frontmatter carries `includeGlobalTaste: true|false` (the per-project Global switch);
+- `audit/current.jsonl` is the append-only audit trail; it rotates at a size/line threshold into `segment-*.jsonl` with a hard cap on segments and total bytes;
+- `preferences.json` and `events.jsonl` from previous versions are not used; history stays in Pi session JSONL;
+- editing `taste.md` directly is possible (it is human-readable), but `/taste` commands or `/taste curate` are the supported ways to manage state.
 
-Writes use atomic replacement and a cross-process lock. Store files are created with private permissions where supported.
+Writes use atomic replacement and a cross-process lock. Store files are created with private permissions where supported. Audit events redact keys and tokens before persisting.
 
 ## 13. Command Code compatibility
 
@@ -423,22 +422,20 @@ Default `~/.pi/agent/taste/config.json`:
     "maxInputChars": 24000
   },
   "injection": {
-    "includeCommandCode": true,
     "maxPreferences": 80,
     "maxChars": 16000
   }
 }
 ```
 
-`learningEnabled` is retained as the persisted master-switch field for config compatibility; it governs both automatic learning and injection. Legacy `injectionEnabled` values are ignored and removed the next time config is saved.
+`learningEnabled` is the persisted master switch for config; it governs both automatic learning and injection.
 
-Default `<project-root>/.pi/taste/config.json`:
+Default `<project-root>/.pi/taste/taste.md` frontmatter:
 
-```json
-{
-  "version": 1,
-  "includeGlobalTaste": true
-}
+```text
+---
+includeGlobalTaste: true
+---
 ```
 
 Use `/taste global on|off` instead of editing this file manually.
@@ -447,16 +444,16 @@ For isolated tests, `PI_TASTE_DIR=/tmp/pi-taste-test` redirects only the global 
 
 ## 15. Privacy and security
 
-- Common token and secret patterns are redacted before interaction excerpts are sent to the Observer or written to audit events.
-- User messages and Agent outcomes are length-capped.
+- Common token and secret patterns are redacted before interaction excerpts are sent to the Learner or written to audit events.
+- User messages and assistant text are length-capped.
 - Redaction is defense in depth, not a complete secret scanner.
-- `events.jsonl` can still contain sensitive feedback or code excerpts; treat it as private.
+- `audit/current.jsonl` can still contain sensitive feedback or code excerpts; treat it as private.
 - Activity cards contain preference text and absolute file paths, but they are not sent to the model.
 - Provider credentials are never copied into Taste configuration or source code.
 
 ## 16. Backup and reuse on another device
 
-The extension source can be reinstalled from GitHub. To preserve learned behavior, back up the private Taste state rather than only generated `taste.md`:
+The extension source can be reinstalled from GitHub. To preserve learned behavior, back up the private Taste state:
 
 ```text
 ~/.pi/agent/taste/

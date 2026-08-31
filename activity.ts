@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import type { PreferenceStatus, StorePaths, TasteScope } from "./types.ts";
+import type { Preference, StorePaths, TasteScope } from "./types.ts";
 
 export const TASTE_ACTIVITY_ENTRY = "taste-activity";
 
@@ -16,20 +16,19 @@ export type TasteActivityKind =
 	| "error";
 export type TasteActivityOutcome = "changed" | "unchanged" | "skipped" | "failed";
 
-export interface TasteActivityChange {
-	action: string;
-	statement?: string;
-	preferenceId?: string;
-	scope?: TasteScope;
-	status?: PreferenceStatus;
-	reason?: string;
-}
+	export type TasteActivityChange = {
+		action: string;
+		statement?: string;
+		preferenceId?: string;
+		scope?: TasteScope;
+		status?: Preference["status"];
+		reason?: string;
+	};
 
 export interface TasteActivityFile {
 	scope: TasteScope;
-	preferences: string;
 	taste: string;
-	events: string;
+	audit: string;
 	changed: boolean;
 }
 
@@ -58,7 +57,7 @@ function actionGlyph(action: string): string {
 	return "•";
 }
 
-function statusEffect(status: PreferenceStatus | undefined): string {
+function statusEffect(status: Preference["status"] | undefined): string {
 	if (status === "approved") return "active next turn";
 	if (status === "pending") return "pending; not injected";
 	if (status === "rejected") return "not injected";
@@ -69,9 +68,8 @@ function statusEffect(status: PreferenceStatus | undefined): string {
 function scopePaths(paths: StorePaths, changedScopes: Set<TasteScope>): TasteActivityFile {
 	return {
 		scope: paths.scope,
-		preferences: paths.preferences,
 		taste: paths.taste,
-		events: paths.events,
+		audit: paths.audit,
 		changed: changedScopes.has(paths.scope),
 	};
 }
@@ -142,11 +140,10 @@ export function installTasteActivityRenderer(pi: ExtensionAPI): void {
 
 		for (const file of data.files) {
 			if (file.changed) {
-				box.addChild(new Text(theme.fg("muted", `State [${file.scope}]: ${file.preferences}`), 0, 0));
 				box.addChild(new Text(theme.fg("muted", `Taste [${file.scope}, approved view]: ${file.taste}`), 0, 0));
 			}
 			if (expanded || !file.changed) {
-				box.addChild(new Text(theme.fg("dim", `Audit [${file.scope}]: ${file.events}`), 0, 0));
+				box.addChild(new Text(theme.fg("dim", `Audit [${file.scope}]: ${file.audit}`), 0, 0));
 			}
 		}
 		if (expanded) {
