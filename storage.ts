@@ -56,7 +56,7 @@ export function defaultConfig(): TasteConfig {
 }
 
 export function defaultProjectConfig(): ProjectTasteConfig {
-	return { version: STORE_VERSION, includeGlobalTaste: false };
+	return { version: STORE_VERSION, includeGlobalTaste: true };
 }
 
 export function emptyPreferenceFile(): PreferenceFile {

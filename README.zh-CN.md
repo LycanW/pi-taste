@@ -13,13 +13,13 @@ Pi Taste 是受 Command Code 用户侧 Taste 工作流启发的独立开源实�
 直接从 GitHub 安装 Pi package：
 
 ```bash
-pi install git:github.com/LycanW/pi-taste@v0.2.0
+pi install git:github.com/LycanW/pi-taste@v0.3.0
 ```
 
 无需永久安装即可试用一次：
 
 ```bash
-pi -e git:github.com/LycanW/pi-taste@v0.2.0
+pi -e git:github.com/LycanW/pi-taste@v0.3.0
 ```
 
 当前版本已使用 Pi 0.84.4 验证，并要求 Node.js 22.19 或更高版本，与 Pi 自身的运行时要求一致。
@@ -40,7 +40,7 @@ pi -e git:github.com/LycanW/pi-taste@v0.2.0
 
 - 自动学习已开启；
 - approved Project Taste 注入已开启；
-- 每个项目默认关闭 Global Taste 注入，需显式开启；
+- 新初始化的项目默认开启 Global Taste 注入和自动 Global 学习，除非显式关闭；
 - Observer 跟随当前 Pi 主模型；
 - 自动学习在后台执行；
 - 基于模型的 Curator 永远不会自动运行。
@@ -71,6 +71,8 @@ pi -e git:github.com/LycanW/pi-taste@v0.2.0
 扩展会先为当前轮生成注入快照，再把当前反馈加入学习队列。因此，新学到的偏好只能影响后续轮次，不会反过来影响提供该证据的当前轮次。
 
 使用 `--no-session` 启动的 Pi 进程，以及带有 `PI_SUBAGENT_CHILD=1` 标记的 `pi-subagents` 子进程，可以接收 approved Taste 注入，但不会产生学习事件。`PI_TASTE_ALLOW_NO_SESSION=1` 仅供隔离测试使用，并且不能绕过 subagent 子进程保护。
+
+自动 Scope 归类遵循最小作用域：默认使用 Project。只有当前反馈明确表达“跨项目/全局个人偏好”，并且当前项目已执行 `/taste global on` 时，才允许归入 Global。`/taste global off` 时，Observer 只查看 Project 偏好，Reducer 还会确定性地把所有新的自动提案限制为 Project。`remember -g`、`import -g` 和 `move ... global` 等显式管理命令仍属于人工覆盖。
 
 ## 3. 对话区活动卡片
 
@@ -264,16 +266,18 @@ TUI 会显示有限预览并要求确认。脚本和 RPC 使用 `--yes`。确认
 /taste inject off
 ```
 
-两个开关相互独立：
+这些控制项职责不同：
 
-- `/taste off` 停止新的自动学习，但不会删除或禁用已有 approved Taste；
-- `/taste global off` 是每个项目的默认值：只注入 Project Taste；
-- `/taste global on` 在当前项目中启用 Global Pi Taste 和 Global Command Code Taste，但 Project Taste 仍有更高优先级；
+- `/taste off` 停止全部新的自动学习，但不会删除或禁用已有 approved Taste；
+- `/taste global on` 是新初始化项目的默认值：在 Project Taste 之后启用 Global Pi Taste 和 Global Command Code Taste 注入，并且只允许有明确跨项目证据的自动学习归入 Global；
+- `/taste global off` 把注入和自动学习都限制在 Project 作用域；当前项目的自动学习不能创建或强化 Global 偏好；
+- 即使 Global 已开启，作用域含糊的自动学习仍默认归入 Project；
 - 项目专属设置保存在 `<project-root>/.pi/taste/config.json`，不会影响其他项目；
-- `/taste inject off` 停止全部提示词注入，但可以继续自动学习；
+- 升级时保留已有项目配置；新的默认值只在项目配置首次初始化时生效；
+- `/taste inject off` 停止全部提示词注入，但可以在当前项目 Global 设置允许的作用域内继续自动学习；
 - 重新开启注入后，会恢复项目设置允许的 approved 快照。
 
-Global 开关只控制注入，不会停止学习或删除记录。关闭时仍可查看和审核 Global 偏好。
+Global 开关不会删除已有 Global 偏好；关闭时仍可查看、审核和管理。显式 `-g` 与 `move ... global` 命令属于人工 Scope 覆盖，不是自动学习。
 
 ## 9. 缓存稳定注入
 
@@ -366,7 +370,7 @@ Taste 为该工作区加载时，会在解析出的项目根目录下初始化 P
 ```text
 <project-root>/.pi/taste/
 ├── .gitignore         # 防止意外公开私有状态
-├── config.json        # 项目专属开关；Global Taste 默认关闭
+├── config.json        # 项目专属开关；Global Taste 默认开启
 ├── events.jsonl
 ├── preferences.json
 └── taste.md
@@ -377,7 +381,7 @@ Taste 为该工作区加载时，会在解析出的项目根目录下初始化 P
 - `preferences.json` 是权威状态；
 - `taste.md` 是自动生成的 approved-only 视图，也是活动卡片显示的 Taste 路径；
 - `events.jsonl` 是仅追加审计记录；
-- 项目 `config.json` 控制 Global Taste 是否参与当前项目；
+- 项目 `config.json` 同时控制 Global 注入，以及当前项目的自动学习能否归入 Global；
 - 不支持通过直接编辑生成的 `taste.md` 来管理状态。
 
 写入过程使用原子替换和跨进程文件锁。在平台支持时，存储文件会使用私有权限创建。
@@ -392,7 +396,7 @@ Taste 为该工作区加载时，会在解析出的项目根目录下初始化 P
 <project-root>/.commandcode/taste/<category>/taste.md
 ```
 
-Pi Taste 会规范化这些条目，并与 Pi 偏好去重。它永远不会修改 Command Code Taste 文件。可疑或格式异常的 category 路径会被排除。Global Command Code Taste 使用相同的项目级 `/taste global on|off` 开关，并且默认关闭。
+Pi Taste 会规范化这些条目，并与 Pi 偏好去重。它永远不会修改 Command Code Taste 文件。可疑或格式异常的 category 路径会被排除。Global Command Code Taste 使用相同的项目级 `/taste global on|off` 开关，并在新初始化的项目中默认开启。
 
 ## 14. 配置文件
 
@@ -424,7 +428,7 @@ Pi Taste 会规范化这些条目，并与 Pi 偏好去重。它永远不会修�
 ```json
 {
   "version": 1,
-  "includeGlobalTaste": false
+  "includeGlobalTaste": true
 }
 ```
 

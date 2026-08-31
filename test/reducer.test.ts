@@ -3,9 +3,9 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { movePreference, rememberPreferences } from "../reducer.ts";
+import { movePreference, reduceObserverResult, rememberPreferences } from "../reducer.ts";
 import { loadPreferenceFile } from "../storage.ts";
-import type { StorePaths, TasteScope } from "../types.ts";
+import type { ObserverResult, StorePaths, TasteScope } from "../types.ts";
 
 function store(root: string, scope: TasteScope): StorePaths {
 	const dir = join(root, scope);
@@ -37,6 +37,77 @@ test("manual batch remember is approved, deduplicated, and rendered", async () =
 		assert.equal(file.preferences[0].status, "approved");
 		assert.equal(file.preferences[0].supportCount, 2);
 		assert.match(await readFile(paths.taste, "utf8"), /Always show exact file paths\./);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("automatic Global scope requires both an enabled switch and explicit global evidence", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-taste-auto-scope-"));
+	try {
+		const globalPaths = store(root, "global");
+		const projectPaths = store(root, "project");
+		const result = (quote: string): ObserverResult => ({
+			classification: { kind: "explicit_preference", reason: "explicit durable preference" },
+			proposals: [
+				{
+					statement: "Always show exact file paths.",
+					scope: "global",
+					signal: "explicit_preference",
+					persistence: "durable",
+					quote,
+					relation: { type: "new", preferenceId: null },
+				},
+			],
+		});
+
+		const disabled = await reduceObserverResult(
+			result("所有项目以后都必须显示准确文件路径"),
+			{
+				eventId: "event-disabled",
+				at: "2026-01-01T00:00:00.000Z",
+				userFeedback: "所有项目以后都必须显示准确文件路径",
+				allowGlobalLearning: false,
+			},
+			globalPaths,
+			projectPaths,
+		);
+		assert.equal(disabled.changes[0].scope, "project");
+		assert.match(disabled.changes[0].reason ?? "", /Global learning is off/);
+		assert.equal((await loadPreferenceFile(globalPaths)).preferences.length, 0);
+		assert.equal((await loadPreferenceFile(projectPaths)).preferences.length, 1);
+
+		await rm(projectPaths.dir, { recursive: true, force: true });
+		const ambiguous = await reduceObserverResult(
+			result("以后必须显示准确文件路径"),
+			{
+				eventId: "event-ambiguous",
+				at: "2026-01-02T00:00:00.000Z",
+				userFeedback: "以后必须显示准确文件路径",
+				allowGlobalLearning: true,
+			},
+			globalPaths,
+			projectPaths,
+		);
+		assert.equal(ambiguous.changes[0].scope, "project");
+		assert.match(ambiguous.changes[0].reason ?? "", /not explicit/);
+		assert.equal((await loadPreferenceFile(globalPaths)).preferences.length, 0);
+
+		await rm(projectPaths.dir, { recursive: true, force: true });
+		const enabled = await reduceObserverResult(
+			result("所有项目以后都必须显示准确文件路径"),
+			{
+				eventId: "event-enabled",
+				at: "2026-01-03T00:00:00.000Z",
+				userFeedback: "所有项目以后都必须显示准确文件路径",
+				allowGlobalLearning: true,
+			},
+			globalPaths,
+			projectPaths,
+		);
+		assert.equal(enabled.changes[0].scope, "global");
+		assert.equal((await loadPreferenceFile(globalPaths)).preferences.length, 1);
+		assert.equal((await loadPreferenceFile(projectPaths)).preferences.length, 0);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

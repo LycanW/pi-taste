@@ -2,6 +2,14 @@
 
 All notable changes to Pi Taste are documented here.
 
+## 0.3.0 - 2026-08-31
+
+- Apply least-scope automatic classification: Project by default, Global only from explicit cross-project evidence.
+- Make the per-project Global switch govern both Global injection and automatic Global learning.
+- Default newly initialized projects to Global injection and automatic Global learning enabled while preserving existing project config.
+- Deterministically constrain automatic Global proposals to Project scope while Global learning is off.
+- Keep explicit `-g` and `move ... global` commands as manual scope overrides.
+
 ## 0.2.0 - 2026-08-31
 
 - Treat Pi's current working directory as the project root when no Git root exists.

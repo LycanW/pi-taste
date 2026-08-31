@@ -36,7 +36,9 @@ Hard policy:
 - A one-turn constraint ("this time", "for this task", "do not run tests yet") is not persistent.
 - An explicit durable preference contains clear persistence or preference language: prefer, always, never, remember, from now on, by default, unless, must, do not, 以后, 记住, 偏好, 始终, 默认, 除非, 必须, 不要, etc.
 - An implicit correction may propose a tentative preference, but mark persistence "uncertain" and signal "implicit_correction".
-- Scope is "project" only when the preference is specifically about this repository/product/codebase. Otherwise use "global".
+- Scope follows least privilege: use "project" by default.
+- Use "global" only when CURRENT_USER_FEEDBACK explicitly says the preference applies across projects/repositories or is a global personal default. Never infer global scope merely because a preference could be reusable.
+- When DATA.GLOBAL_LEARNING_ENABLED is false, every proposal MUST use "project", even if the evidence expresses a cross-project preference.
 - Proposals must be reusable behavioral instructions, not facts about the current task and not summaries of agent output.
 - Every proposal quote must be a short, exact, contiguous excerpt from CURRENT_USER_FEEDBACK.
 - Do not provide confidence. The reducer computes it deterministically.
@@ -68,8 +70,9 @@ Examples:
 - "很好，继续" => acknowledgement, proposals [].
 - "这次先别跑测试" => task_constraint, proposals [].
 - "不对，这个函数会返回 null" => correctness_fix, proposals [].
-- "以后不要创建 worktree，除非我明确要求" => one global explicit durable proposal.
-- User revises the agent's style without durable wording => implicit_correction, uncertain, pending proposal.`;
+- "以后不要创建 worktree，除非我明确要求" => one project explicit durable proposal unless the user explicitly says this applies across projects.
+- "所有项目以后都不要创建 worktree，除非我明确要求" => one global explicit durable proposal only when GLOBAL_LEARNING_ENABLED is true; otherwise project.
+- User revises the agent's style without durable wording => implicit_correction, uncertain, pending project proposal unless global scope is explicit and enabled.`;
 
 function extractJson(text: string): unknown {
 	const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
@@ -128,6 +131,7 @@ function observerInput(
 	userFeedback: string,
 	preferences: Preference[],
 	maxChars: number,
+	allowGlobalLearning: boolean,
 ): string {
 	const compactPreferences = preferences.slice(0, 200).map((preference) => ({
 		id: preference.id,
@@ -144,6 +148,7 @@ function observerInput(
 				}
 			: null,
 		CURRENT_USER_FEEDBACK: clipText(userFeedback, Math.floor(maxChars * 0.35)),
+		GLOBAL_LEARNING_ENABLED: allowGlobalLearning,
 		EXISTING_PREFERENCES: compactPreferences,
 	};
 	return `DATA_START\n${clipText(JSON.stringify(payload, null, 2), maxChars)}\nDATA_END`;
@@ -174,6 +179,7 @@ export async function observeFeedback(
 	previous: AgentOutcome | undefined,
 	userFeedback: string,
 	preferences: Preference[],
+	allowGlobalLearning: boolean,
 ): Promise<{ result: ObserverResult; usage: ObserverUsage }> {
 	const model = resolveTasteModel(ctx, config);
 	if (!model) {
@@ -185,7 +191,18 @@ export async function observeFeedback(
 	}
 	const message: UserMessage = {
 		role: "user",
-		content: [{ type: "text", text: observerInput(previous, userFeedback, preferences, config.observer.maxInputChars) }],
+		content: [
+			{
+				type: "text",
+				text: observerInput(
+					previous,
+					userFeedback,
+					preferences,
+					config.observer.maxInputChars,
+					allowGlobalLearning,
+				),
+			},
+		],
 		timestamp: Date.now(),
 	};
 	const signal = AbortSignal.timeout(config.observer.timeoutMs);

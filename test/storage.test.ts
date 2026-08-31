@@ -22,11 +22,11 @@ test("a non-Git working directory is a valid project root", async () => {
 	}
 });
 
-test("project storage defaults to project-only injection and initializes readable state", async () => {
+test("project storage defaults to Global injection and learning and initializes readable state", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-taste-project-config-"));
 	try {
 		const paths = projectStorePaths(root)!;
-		assert.deepEqual(await loadProjectConfig(paths), { version: 1, includeGlobalTaste: false });
+		assert.deepEqual(await loadProjectConfig(paths), { version: 1, includeGlobalTaste: true });
 		await Promise.all([
 			access(paths.preferences),
 			access(paths.taste),
@@ -34,8 +34,8 @@ test("project storage defaults to project-only injection and initializes readabl
 			access(join(paths.dir, "config.json")),
 			access(join(paths.dir, ".gitignore")),
 		]);
-		await saveProjectConfig(paths, { version: 1, includeGlobalTaste: true });
-		assert.deepEqual(await loadProjectConfig(paths), { version: 1, includeGlobalTaste: true });
+		await saveProjectConfig(paths, { version: 1, includeGlobalTaste: false });
+		assert.deepEqual(await loadProjectConfig(paths), { version: 1, includeGlobalTaste: false });
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

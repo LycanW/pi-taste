@@ -13,13 +13,13 @@ Pi Taste is an independent open-source implementation inspired by the user-facin
 Install the Pi package directly from GitHub:
 
 ```bash
-pi install git:github.com/LycanW/pi-taste@v0.2.0
+pi install git:github.com/LycanW/pi-taste@v0.3.0
 ```
 
 Try it for one run without installing:
 
 ```bash
-pi -e git:github.com/LycanW/pi-taste@v0.2.0
+pi -e git:github.com/LycanW/pi-taste@v0.3.0
 ```
 
 This release is tested with Pi 0.84.4 and requires Node.js 22.19 or newer, matching Pi's runtime requirement.
@@ -40,7 +40,7 @@ Default behavior:
 
 - automatic learning is on;
 - approved Project Taste injection is on;
-- Global Taste injection is off for each project unless explicitly enabled;
+- Global Taste injection and automatic Global learning are on for newly initialized projects unless explicitly disabled;
 - the Observer follows the current main Pi model;
 - automatic learning runs in the background;
 - model-assisted curation never runs automatically.
@@ -71,6 +71,8 @@ The current user message is the preference evidence. The previous Agent response
 The injection snapshot is created before the current feedback is queued for learning. Therefore, a newly learned preference can affect only a later turn, never the same turn that supplied its evidence.
 
 Pi processes launched with `--no-session`, and `pi-subagents` children marked by `PI_SUBAGENT_CHILD=1`, receive approved Taste injection but do not generate learning events. `PI_TASTE_ALLOW_NO_SESSION=1` is intended only for isolated testing and never overrides the subagent-child guard.
+
+Automatic scope assignment follows least privilege. Project is the default. Global is allowed only when the current feedback explicitly describes a cross-project/global personal preference and `/taste global on` is active for the current project. With `/taste global off`, the Observer sees only Project preferences and the Reducer deterministically constrains every new automatic proposal to Project scope. Explicit management commands such as `remember -g`, `import -g`, and `move ... global` remain manual overrides.
 
 ## 3. Conversation activity cards
 
@@ -264,16 +266,18 @@ Forgetting is audit-preserving: it changes the status to `rejected` rather than 
 /taste inject off
 ```
 
-These switches are independent:
+The controls have separate roles:
 
-- `/taste off` stops new automatic learning but does not remove or disable existing approved Taste;
-- `/taste global off` is the default for every project: only Project Taste is injected;
-- `/taste global on` enables Global Pi Taste and Global Command Code Taste in the current project, below Project Taste priority;
+- `/taste off` stops all new automatic learning but does not remove or disable existing approved Taste;
+- `/taste global on` is the default for newly initialized projects: it enables Global Pi Taste and Global Command Code Taste injection below Project Taste priority, and permits automatic Global learning only from explicit cross-project evidence;
+- `/taste global off` limits both injection and automatic learning to Project scope; automatic learning cannot create or reinforce Global preferences from that project;
+- ambiguous automatic scope always defaults to Project, even when Global is on;
 - the project-specific choice is stored in `<project-root>/.pi/taste/config.json` and does not affect other projects;
-- `/taste inject off` stops all prompt injection but can leave automatic learning enabled;
+- existing project config is preserved across upgrades; the new default applies only when a project config is first initialized;
+- `/taste inject off` stops all prompt injection but can leave automatic learning enabled within the scopes permitted by the project Global setting;
 - turning injection back on restores the approved snapshot allowed by the project setting.
 
-The global switch controls injection, not learning or deletion. Global preferences remain stored and can still be reviewed while disabled.
+The Global switch never deletes existing Global preferences. They remain stored and can still be listed, reviewed, or managed while disabled. Explicit `-g` and `move ... global` commands are manual scope overrides rather than automatic learning.
 
 ## 9. Cache-stable injection
 
@@ -366,7 +370,7 @@ Project state is initialized under the resolved project root when Taste loads fo
 ```text
 <project-root>/.pi/taste/
 ├── .gitignore         # prevents accidental publication of private state
-├── config.json        # per-project switch; Global Taste defaults off
+├── config.json        # per-project switch; Global Taste defaults on
 ├── events.jsonl
 ├── preferences.json
 └── taste.md
@@ -377,7 +381,7 @@ File roles:
 - `preferences.json` is authoritative;
 - `taste.md` is a generated approved-only view and the path shown in activity cards;
 - `events.jsonl` is the append-only audit trail;
-- project `config.json` controls whether Global Taste participates in this project;
+- project `config.json` controls both Global injection and whether automatic learning may target Global scope from this project;
 - editing generated `taste.md` directly is not the supported way to manage state.
 
 Writes use atomic replacement and a cross-process lock. Store files are created with private permissions where supported.
@@ -392,7 +396,7 @@ The following files are optional, read-only approved sources:
 <project-root>/.commandcode/taste/<category>/taste.md
 ```
 
-Pi Taste normalizes and deduplicates these entries against Pi preferences. It never modifies Command Code Taste files. Suspicious malformed category paths are excluded. Global Command Code Taste follows the same per-project `/taste global on|off` switch and is off by default.
+Pi Taste normalizes and deduplicates these entries against Pi preferences. It never modifies Command Code Taste files. Suspicious malformed category paths are excluded. Global Command Code Taste follows the same per-project `/taste global on|off` switch and is on by default for newly initialized projects.
 
 ## 14. Configuration
 
@@ -424,7 +428,7 @@ Default `<project-root>/.pi/taste/config.json`:
 ```json
 {
   "version": 1,
-  "includeGlobalTaste": false
+  "includeGlobalTaste": true
 }
 ```
 

@@ -186,7 +186,7 @@ async function preferenceStores(cwd: string): Promise<{
 	const projectPaths = projectStorePaths(projectRoot);
 	const projectConfig = projectPaths
 		? await loadProjectConfig(projectPaths)
-		: { version: 1 as const, includeGlobalTaste: false };
+		: { version: 1 as const, includeGlobalTaste: true };
 	const [globalFile, projectFile] = await Promise.all([
 		loadPreferenceFile(globalPaths),
 		projectPaths ? loadPreferenceFile(projectPaths) : Promise.resolve(undefined),
@@ -456,11 +456,31 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 				result = syntheticLowSignalResult();
 				event.observer = { status: "skipped", result, reason: "low-signal acknowledgement" };
 			} else {
-				const observed = await observeFeedback(ctx, config, previous, feedback, [...stores.project, ...stores.global]);
+				const allowGlobalLearning = stores.projectConfig.includeGlobalTaste;
+				const visiblePreferences = allowGlobalLearning ? [...stores.project, ...stores.global] : stores.project;
+				const observed = await observeFeedback(
+					ctx,
+					config,
+					previous,
+					feedback,
+					visiblePreferences,
+					allowGlobalLearning,
+				);
 				result = observed.result;
 				event.observer = { status: "completed", result, usage: observed.usage };
 			}
-			const reduction = await reduceObserverResult(result, { eventId: id, at, userFeedback: feedback, sessionId: sessionId(ctx) }, stores.globalPaths, stores.projectPaths);
+			const reduction = await reduceObserverResult(
+				result,
+				{
+					eventId: id,
+					at,
+					userFeedback: feedback,
+					sessionId: sessionId(ctx),
+					allowGlobalLearning: stores.projectConfig.includeGlobalTaste,
+				},
+				stores.globalPaths,
+				stores.projectPaths,
+			);
 			event.reducer = reduction;
 			await appendEvent(stores.globalPaths, event);
 			const projectChanged = Boolean(
@@ -628,7 +648,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 						[
 							`Taste learning: ${config.learningEnabled ? "on" : "off"}${learningAllowedInProcess ? "" : " (disabled for --no-session/subagent)"}`,
 							`Taste injection: ${config.injectionEnabled ? "on" : "off"}`,
-							`Global Taste in this project: ${stores.projectConfig.includeGlobalTaste ? "on" : "off (project-only)"}`,
+							`Global Taste in this project: ${stores.projectConfig.includeGlobalTaste ? "on (injection + automatic learning)" : "off (project-only injection + learning)"}`,
 							`Taste model mode: ${config.observer.modelMode}`,
 							`Observer: ${activeModel ? `${activeModel.provider}/${activeModel.id}` : "unavailable"}`,
 							`Injection snapshot: ${lastInjectionSnapshot.digest} (${lastInjectionSnapshot.count} entries, ${lastInjectionSnapshot.bytes} bytes)`,
@@ -1112,7 +1132,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 					if (!stores.projectPaths) throw new Error("Project Taste is unavailable for the current working directory.");
 					if (action === "status") {
 						ctx.ui.notify(
-							`Global Taste in this project: ${stores.projectConfig.includeGlobalTaste ? "on" : "off (project-only)"}\nProject config: ${projectConfigPath(stores.projectPaths)}`,
+							`Global Taste in this project: ${stores.projectConfig.includeGlobalTaste ? "on (injection + automatic learning)" : "off (project-only injection + learning)"}\nProject config: ${projectConfigPath(stores.projectPaths)}`,
 							"info",
 						);
 						return;
@@ -1146,7 +1166,7 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 						type: "config",
 						...(command.sessionId ? { sessionId: command.sessionId } : {}),
 						...(stores.projectRoot ? { projectRoot: stores.projectRoot } : {}),
-						details: { action: "project-global-injection", enabled },
+						details: { action: "project-global-access", enabled },
 					};
 					await appendAuditEvent(stores.globalPaths, stores.projectPaths, event);
 					safeAppendTasteActivity(pi, {
@@ -1158,12 +1178,12 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 						title: `Global Taste ${enabled ? "enabled" : "disabled"} for this project`,
 						changes: [],
 						files: tasteActivityFiles(stores.globalPaths, stores.projectPaths, [], true),
-						detail: `Project config: ${projectConfigPath(stores.projectPaths)}`,
+						detail: `${enabled ? "Global injection and automatic Global learning enabled." : "Automatic learning constrained to Project scope; Global injection disabled."}\nProject config: ${projectConfigPath(stores.projectPaths)}`,
 					});
 					ctx.ui.notify(
 						enabled
-							? "Global Taste is enabled for this project. Project Taste still has priority."
-							: "Global Taste is disabled for this project. Only Project Taste will be injected.",
+							? "Global Taste injection and automatic Global learning are enabled for this project. Project scope remains the default and has injection priority."
+							: "Global Taste is disabled for this project. Only Project Taste will be injected or learned automatically.",
 						"info",
 					);
 					return;

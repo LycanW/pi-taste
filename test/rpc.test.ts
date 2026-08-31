@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import test from "node:test";
 
-test("non-Git workspaces default to project-only injection and can enable Global Taste", { timeout: 30_000 }, async () => {
+test("non-Git workspaces default to Global injection and learning and can disable it", { timeout: 30_000 }, async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-taste-rpc-"));
 	const workspace = join(root, "workspace");
 	const globalStore = join(root, "global");
@@ -50,15 +50,15 @@ test("non-Git workspaces default to project-only injection and can enable Global
 		await command("/taste remember -g Keep global responses concise.");
 		await command("/taste remember Keep this workspace project-only.");
 		const [defaultStatus] = await command("/taste status");
-		assert.match(defaultStatus, /Global Taste in this project: off \(project-only\)/);
-		assert.match(defaultStatus, /Injection snapshot: \S+ \(1 entries,/);
-		await command("/taste global on");
-		const [enabledStatus] = await command("/taste status");
-		assert.match(enabledStatus, /Global Taste in this project: on/);
-		assert.match(enabledStatus, /Injection snapshot: \S+ \(2 entries,/);
+		assert.match(defaultStatus, /Global Taste in this project: on \(injection \+ automatic learning\)/);
+		assert.match(defaultStatus, /Injection snapshot: \S+ \(2 entries,/);
+		await command("/taste global off");
+		const [disabledStatus] = await command("/taste status");
+		assert.match(disabledStatus, /Global Taste in this project: off \(project-only injection \+ learning\)/);
+		assert.match(disabledStatus, /Injection snapshot: \S+ \(1 entries,/);
 		const projectRoot = join(workspace, ".pi", "taste");
 		const config = JSON.parse(await readFile(join(projectRoot, "config.json"), "utf8"));
-		assert.deepEqual(config, { version: 1, includeGlobalTaste: true });
+		assert.deepEqual(config, { version: 1, includeGlobalTaste: false });
 		assert.match(await readFile(join(projectRoot, "taste.md"), "utf8"), /Keep this workspace project-only\./);
 	} finally {
 		child.stdin.end();

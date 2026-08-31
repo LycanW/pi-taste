@@ -24,12 +24,14 @@ export interface MutationContext {
 
 export interface ReductionContext extends MutationContext {
 	userFeedback: string;
+	allowGlobalLearning: boolean;
 }
 
 interface ValidatedProposal extends ObserverProposal {
 	statement: string;
 	quote: string;
 	effectiveSignal: "explicit_preference" | "implicit_correction";
+	scopeConstraintReason?: string;
 }
 
 function roundConfidence(value: number): number {
@@ -107,6 +109,12 @@ function hasTurnOnlyMarker(text: string): boolean {
 	);
 }
 
+function hasExplicitGlobalScopeMarker(text: string): boolean {
+	return /(?:\b(?:all|every|any)\s+(?:my\s+)?(?:projects?|repos?|repositories|codebases?|workspaces?|responses?|answers?|coding tasks?)\b|\bacross\s+(?:all\s+)?(?:projects?|repos?|repositories|codebases?|workspaces?)\b|\bglobally\b|\bglobal\s+(?:preference|default|habit|rule)\b|\bmy\s+(?:global\s+)?default\b|\bmy\s+general\s+preference\b|所有(?:的)?(?:项目|仓库|代码库|工作区|回答|编码任务)|每个(?:项目|仓库|代码库|工作区)|任何(?:项目|仓库|代码库|工作区)|全部(?:项目|仓库|代码库|工作区)|跨项目|全局(?:偏好|习惯|默认|规则)?|我的(?:全局)?默认(?:习惯|偏好)?)/i.test(
+		text,
+	);
+}
+
 function cleanStatement(value: string): string {
 	return value
 		.trim()
@@ -127,6 +135,7 @@ function validateProposal(
 	feedback: string,
 	projectAvailable: boolean,
 	allowExplicit: boolean,
+	allowGlobalLearning: boolean,
 ): { proposal?: ValidatedProposal; reason?: string } {
 	if (!proposal || typeof proposal !== "object") return { reason: "proposal is not an object" };
 	const statement = cleanStatement(typeof proposal.statement === "string" ? proposal.statement : "");
@@ -137,7 +146,10 @@ function validateProposal(
 		return { reason: "evidence quote is not an exact excerpt of the current user feedback" };
 	}
 	if (proposal.scope !== "global" && proposal.scope !== "project") return { reason: "invalid scope" };
-	if (proposal.scope === "project" && !projectAvailable) {
+	const globalScopeConstrained =
+		proposal.scope === "global" && (!allowGlobalLearning || !hasExplicitGlobalScopeMarker(feedback));
+	const effectiveScope = globalScopeConstrained ? "project" : proposal.scope;
+	if (effectiveScope === "project" && !projectAvailable) {
 		return { reason: "project scope is unavailable for the current working directory" };
 	}
 	if (proposal.signal !== "explicit_preference" && proposal.signal !== "implicit_correction") {
@@ -166,9 +178,17 @@ function validateProposal(
 	return {
 		proposal: {
 			...proposal,
+			scope: effectiveScope,
 			statement,
 			quote,
 			effectiveSignal: explicitIsGrounded ? "explicit_preference" : "implicit_correction",
+			...(globalScopeConstrained
+				? {
+						scopeConstraintReason: allowGlobalLearning
+							? "Global scope was not explicit; constrained to project scope"
+							: "Global learning is off; constrained to project scope",
+					}
+				: {}),
 		},
 	};
 }
@@ -251,6 +271,7 @@ function updateExisting(
 		status: preference.status,
 		statement: preference.statement,
 		scope: preference.scope,
+		...(proposal.scopeConstraintReason ? { reason: proposal.scopeConstraintReason } : {}),
 	};
 }
 
@@ -317,6 +338,7 @@ function applyToFile(
 			status: created.status,
 			statement: created.statement,
 			scope: created.scope,
+			...(proposal.scopeConstraintReason ? { reason: proposal.scopeConstraintReason } : {}),
 		});
 	}
 	return changes;
@@ -354,6 +376,7 @@ export async function reduceObserverResult(
 			context.userFeedback,
 			Boolean(projectPaths),
 			result.classification.kind === "explicit_preference",
+			context.allowGlobalLearning,
 		);
 		if (!checked.proposal) {
 			changes.push({ action: "skipped", reason: checked.reason });
