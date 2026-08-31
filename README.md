@@ -272,15 +272,6 @@ tar -C ~/.pi/agent -czf - taste \
 
 - Edit `taste.md` directly (it is human-readable) or `/taste forget <id>`.
 
-## 15. Design reference
-
-The pipeline follows the approach of Command Code CLI 1.38.2:
-
-- `createLearner` runs a tool-calling loop with `read_taste_file` / `write_taste_file` / `edit_taste_file` (max 20 turns).
-- `getTasteStructure` builds the tree view; `reorganizeIfNeeded` moves >5-learning categories into folders.
-- `renderTasteSection` wraps the content in `<taste>...</taste>` for the main model.
-- The system prompt requires "durable, generalizable" preferences and forbids re-learning from the previously analyzed window.
-
 ## License
 
 MIT

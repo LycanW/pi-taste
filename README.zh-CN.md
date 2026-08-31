@@ -272,15 +272,6 @@ tar -C ~/.pi/agent -czf - taste \
 
 - 直接编辑 `taste.md`（人类可读），或 `/taste forget <id>`。
 
-## 15. 设计参考
-
-管线参照 Command Code CLI 1.38.2 的做法：
-
-- `createLearner` 使用 `read_taste_file` / `write_taste_file` / `edit_taste_file` 运行工具循环（最多 20 轮）。
-- `getTasteStructure` 构建树视图；`reorganizeIfNeeded` 将 >5 条学习移入文件夹。
-- `renderTasteSection` 将内容包装为 `<taste>...</taste>` 供主模型使用。
-- 系统提示要求 "durable, generalizable" 偏好，并禁止从之前分析窗口重复学习。
-
 ## 许可证
 
 MIT
