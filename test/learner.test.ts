@@ -61,6 +61,7 @@ function fakeContext() {
 test("isLearnableMessage excludes tool results, meta, and summary", () => {
 	assert.equal(isLearnableMessage({ role: "user", content: [{ type: "text", text: "hello" }], meta: { source: "user" } }), true);
 	assert.equal(isLearnableMessage({ role: "user", content: [{ type: "toolResult" }] }), false);
+	assert.equal(isLearnableMessage({ role: "toolResult", content: [{ type: "text", text: "secret output" }] }), false);
 	assert.equal(isLearnableMessage({ role: "user", content: [{ type: "text", text: "x" }], meta: { isAutomated: true } }), false);
 	assert.equal(isLearnableMessage({ role: "user", content: [{ type: "text", text: "x" }], meta: { isSummary: true } }), false);
 });
@@ -75,6 +76,21 @@ test("buildLeanerInput includes taste structure and new-message split", () => {
 	assert.match(input, /Previously analyzed conversation/);
 	assert.match(input, /NEW messages to analyze/);
 	assert.match(input, /taste\.md \(1 learnings\)/);
+	assert.match(input, /以后用 tabs/);
+	assert.match(input, /好的/);
+});
+
+test("buildLeanerInput falls back to InteractionContext for an empty NEW message array", () => {
+	const input = buildLeanerInput(
+		{ userText: "性能测试不要依赖人工进游戏", assistantText: "会建立量化测量台" },
+		"taste.md (empty)",
+		[{ role: "toolResult", content: [{ type: "text", text: "must not leak" }] }],
+		[],
+	);
+	assert.match(input, /性能测试不要依赖人工进游戏/);
+	assert.match(input, /会建立量化测量台/);
+	assert.doesNotMatch(input, /must not leak/);
+	assert.doesNotMatch(input, /NEW messages to analyze[^]*\[\]/);
 });
 
 test("runLearner executes model tool calls and writes taste.md", async () => {

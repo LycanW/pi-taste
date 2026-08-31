@@ -2,6 +2,16 @@
 
 All notable changes to Pi Taste are documented here.
 
+## 0.5.2 - 2026-09-01
+
+- Fix automatic learning receiving an empty `NEW messages` section on every run.
+- Capture the current assistant response after `agent_settled`, instead of reading
+  the previous response during the user's `input` event.
+- Include up to 20 prior visible user/assistant messages as context while keeping
+  tool calls, tool results, reasoning, and metadata out of Learner input.
+- Add a lifecycle integration test covering `input` → `agent_settled` → Learner.
+
+
 ## 0.5.1 - 2026-09-01
 
 - Fix Learner tool schema for Pi: use `parameters` (Pi Tool type) instead of

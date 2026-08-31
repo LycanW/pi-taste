@@ -243,11 +243,43 @@ function commandContext(ctx: ExtensionContext, id = eventId()): { eventId: strin
 	return { eventId: id, at: new Date().toISOString(), ...(sessionId(ctx) ? { sessionId: sessionId(ctx) } : {}) };
 }
 
-function findHistorySplit(messages: any[], searchIndex: number): { previous: any[]; new: any[] } {
-	// Command Code: window of last LEARNER_CONTEXT_WINDOW learnable messages,
-	// split at the first message after the last learned index.
-	const tail = messages.slice(Math.max(0, messages.length - 20));
-	return { previous: tail.slice(0, Math.max(0, tail.length - 1)), new: tail.slice(-1) };
+function plainMessageText(message: any): string {
+	if (!Array.isArray(message?.content)) return "";
+	return message.content
+		.filter((part: any) => part?.type === "text" && typeof part.text === "string")
+		.map((part: any) => part.text)
+		.join("\n")
+		.trim();
+}
+
+function previousConversationMessages(ctx: ExtensionContext, currentUserText: string): any[] {
+	const messages = ctx.sessionManager
+		.getBranch()
+		.filter((entry: any) => entry?.type === "message" && entry.message)
+		.map((entry: any) => entry.message)
+		.filter((message: any) => message.role === "user" || message.role === "assistant");
+	// Depending on Pi's event timing, the current input may already be in the
+	// branch. It belongs in NEW, never in the previously analyzed context.
+	const last = messages.at(-1);
+	if (last?.role === "user" && plainMessageText(last) === currentUserText.trim()) messages.pop();
+	return messages.slice(-20);
+}
+
+function currentInteractionMessages(interaction: InteractionContext): any[] {
+	const messages: any[] = [
+		{
+			role: "user",
+			content: [{ type: "text", text: clipText(interaction.userText, MAX_EVENT_USER_TEXT) }],
+			meta: { source: "user" },
+		},
+	];
+	if (interaction.assistantText.trim()) {
+		messages.push({
+			role: "assistant",
+			content: [{ type: "text", text: clipText(interaction.assistantText, MAX_EVENT_ASSISTANT_TEXT) }],
+		});
+	}
+	return messages;
 }
 
 function commandHelp(): string {
@@ -353,7 +385,16 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 	const flushPendingFeedback = () => {
 		const jobs = pendingFeedback;
 		pendingFeedback = [];
-		for (const job of jobs) enqueueFeedback(job);
+		for (const job of jobs) {
+			// `input` fires before the current assistant response exists. Capture the
+			// completed visible response only now, after agent_settled (or shutdown).
+			job.interaction = {
+				...job.interaction,
+				assistantText: currentRunAssistantText(job.ctx),
+			};
+			job.newMessages = currentInteractionMessages(job.interaction);
+			enqueueFeedback(job);
+		}
 		refreshFooter();
 	};
 
@@ -389,17 +430,21 @@ export default async function tasteExtension(pi: ExtensionAPI) {
 		) {
 			return;
 		}
-		const assistantText = event.streamingBehavior
-			? currentRunAssistantText(ctx)
-			: visibleAssistantText(ctx);
 		const interaction: InteractionContext = {
 			userText: event.text,
-			assistantText,
+			// Filled after the current agent run settles; reading it here captures
+			// the previous response and was the original automatic-learning bug.
+			assistantText: "",
 		};
 		const fingerprint = feedbackFingerprint(interaction, sessionId(ctx));
 		if (fingerprint === lastEnqueuedFingerprint) return;
 		lastEnqueuedFingerprint = fingerprint;
-		pendingFeedback.push({ ctx, interaction, previousMessages: [], newMessages: [] });
+		pendingFeedback.push({
+			ctx,
+			interaction,
+			previousMessages: previousConversationMessages(ctx, event.text),
+			newMessages: [],
+		});
 		refreshFooter();
 	});
 

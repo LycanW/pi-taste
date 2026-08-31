@@ -75,13 +75,14 @@ interface ConversationSegment {
 
 export function isLearnableMessage(message: any): boolean {
 	const meta = message?.meta;
-	// Mirror Command Code: automated/meta/summary/tool-result messages are excluded.
+	// Only visible user/assistant conversation belongs in Taste learning context.
+	if (message?.role !== "user" && message?.role !== "assistant") return false;
 	return !(
 		meta?.isAutomated ||
 		meta?.isMeta ||
 		meta?.isSummary ||
-		(message?.role === "user" && Array.isArray(message.content) && message.content.some((part: any) => part?.type === "toolResult")) ||
-		(message?.role === "user" && meta?.source && meta.source !== "user")
+		(message.role === "user" && Array.isArray(message.content) && message.content.some((part: any) => part?.type === "toolResult")) ||
+		(message.role === "user" && meta?.source && meta.source !== "user")
 	);
 }
 
@@ -101,20 +102,30 @@ export function buildLeanerInput(
 	const visible = (messages: any[]) =>
 		messages
 			.map((message) => stripReasoning(message))
-			.filter((message) => isLearnableMessage(message) || message.role === "assistant")
+			.filter((message) => isLearnableMessage(message))
 			.map((message) => ({
 				role: message.role,
 				content: message.content
-					?.filter((part: any) => part?.type === "text" || part?.type === "toolCall" || part?.type === "toolResult")
-					.map((part: any) => ({
-						type: part.type,
-						...(part.type === "text" ? { text: part.text } : {}),
-						...(part.type === "toolCall" ? { name: part.name, arguments: part.arguments } : {}),
-						...(part.type === "toolResult" ? { toolCallId: part.toolCallId, content: part.content } : {}),
-					})),
-			}));
+					?.filter((part: any) => part?.type === "text" && typeof part.text === "string" && part.text.trim())
+					.map((part: any) => ({ type: "text", text: part.text })),
+			}))
+			.filter((message) => message.content?.length > 0);
 	const previousVisible = visible(previousMessages);
 	const currentVisible = visible(newMessages);
+	// InteractionContext is the canonical current turn. Keep it as a fallback so
+	// an event-wiring mistake can never send an empty NEW section again.
+	if (!currentVisible.some((message) => message.role === "user") && interaction.userText.trim()) {
+		currentVisible.unshift({
+			role: "user",
+			content: [{ type: "text", text: clipText(interaction.userText, 8_000) }],
+		});
+	}
+	if (!currentVisible.some((message) => message.role === "assistant") && interaction.assistantText.trim()) {
+		currentVisible.push({
+			role: "assistant",
+			content: [{ type: "text", text: clipText(interaction.assistantText, 12_000) }],
+		});
+	}
 	return [
 		sessionSummary ? `Session summary:\n${clipText(sessionSummary, 3_000)}\n\n` : "",
 		`Current taste structure:\n${tasteStructure}\n\n`,
