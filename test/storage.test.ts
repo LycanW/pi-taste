@@ -151,10 +151,10 @@ test("readTastePackageContent expands safe category files and ignores unsafe dir
 	try {
 		const paths = store(root);
 		await mkdir(join(paths.dir, "graphics"), { recursive: true });
-		await mkdir(join(paths.dir, "bad:windows"), { recursive: true });
+		await mkdir(join(paths.dir, "_unsafe"), { recursive: true });
 		await writeFile(paths.taste, "See [graphics/taste.md](graphics/taste.md)\n");
 		await writeFile(join(paths.dir, "graphics", "taste.md"), "- Stable frames. Confidence: 0.9\n");
-		await writeFile(join(paths.dir, "bad:windows", "taste.md"), "- Unsafe. Confidence: 1.0\n");
+		await writeFile(join(paths.dir, "_unsafe", "taste.md"), "- Unsafe. Confidence: 1.0\n");
 		const content = await readTastePackageContent(paths);
 		assert.match(content, /Taste source:/);
 		assert.match(content, /See \[graphics\/taste\.md\]/);
